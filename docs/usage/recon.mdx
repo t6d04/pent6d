@@ -1,0 +1,43 @@
+---
+title: "Recon inventory"
+description: "Persistent per-run recon and screenshot gallery"
+---
+
+The Recon tab shows the selected run's structured observations. Agents record
+them incrementally with `record_recon` and retrieve them using `list_recon`.
+The tab refreshes every three seconds during a run and supports searching,
+filtering by type/alive state, screenshot previews and JSON export.
+
+Each run owns `recon.json` and `recon_screenshots/` alongside `run.json`.
+Images are copied from the sandbox when the agent records the capture, so they
+survive sandbox cleanup, failed runs and application restarts. PNG and JPEG
+captures are supported, up to 10 MiB per image. The artifact supports up to
+10,000 observations; agents should retain distinct useful surfaces rather
+than every crawler response.
+
+Before vulnerability specialists start, the root agent calls
+`finalize_recon`. Pent6d serializes every persisted observation into bounded
+chunks in the run's `.state/shared_memory.db` and writes
+`recon_complete.json`. This is a run-scoped snapshot: later agents can search
+shared memory without relying on compacted chat history, and a new run never
+inherits another run's recon data. Finalization is idempotent, so a retry does
+not duplicate the snapshot.
+
+Supported types: subdomain, JavaScript resource, suspected JS leak, endpoint,
+service and technology. Records include source, scope, alive state, HTTP code,
+title, IPs, technologies, method, redacted evidence, confidence, agent identity,
+first/last observation timestamps and an optional finding ID.
+
+Alive means HTTP answered, including 401/403. Unreachable means the latest probe
+failed; it does not prove a host no longer exists. Passive discovery remains
+unknown until checked. JS leaks remain candidates until validated and reported
+through the finding workflow. Do not store raw secrets in the inventory.
+
+Existing runs show an empty inventory until structured records are saved; their
+transcripts are not automatically converted into verified observations. New
+runs do not inherit inventory or authorization from other runs.
+
+Useful next extensions include DNS/CNAME history, certificate expiry and SANs,
+redirect chains, endpoint parameters/auth roles, archived URLs with live checks,
+content hashes, per-project differences between runs and links from candidates
+to validated findings. These can build on the same run-scoped inventory.

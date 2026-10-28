@@ -1,0 +1,36 @@
+---
+title: "Local Web Control"
+description: "Start and control a local Strix scan from a browser"
+---
+
+`strix web` opens one local browser hub for the whole local scan workflow:
+configure an LLM connection, add authorized targets, choose a scan depth, start
+new scans, monitor progress, and review the resulting reports.
+
+Organize work by **Projects**. A project owns its authorized target scope, scan
+instructions and options, and its own run history. New project artifacts are
+stored under `strix_runs/projects/<project-id>/`, and the viewer API is scoped
+to the selected project's directory. Create or select a project before starting
+a run; the dashboard and run picker then show only that project's runs.
+Existing local runs are retained under an `Imported history` project the first
+time the hub starts.
+
+```bash
+strix web
+strix web --port 8080
+strix web --target ./my-app --scan-mode quick
+```
+
+The server binds to `127.0.0.1` by default and only accepts loopback hosts.
+The URL printed by Strix includes a one-time capability token; do not share it.
+The token is exchanged for an HttpOnly local session cookie before the browser
+can read run data or issue scan-control commands.
+
+The model form saves only to Strix's local configuration file. Existing API
+keys are never returned to the browser; the UI only displays whether a key is
+configured. Each run starts as an isolated local worker and appears in the
+same run list, so starting another run does not replace the current viewer or
+interrupt an earlier one. The scan itself still requires Docker, and targets
+must be systems you are authorized to assess.
+
+`strix view` remains available for report-only viewing of an existing run.

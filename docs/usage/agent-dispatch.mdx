@@ -1,0 +1,47 @@
+---
+title: Agent dispatch policy
+description: Runtime rules for bounded recon, specialist fan-out, validation, and impact review.
+---
+
+# Agent dispatch policy
+
+Pent6d uses the root agent as an orchestrator. The root does not receive shell,
+filesystem, proxy, web-search, or direct vulnerability-reporting tools. Target
+interaction is delegated to child agents.
+
+## Required sequence
+
+Black-box quick/standard/deep scans must create a `recon` child first.
+White-box scans use a `source_mapper` child. The mapper writes structured observations
+with `record_recon`, then must call `finalize_recon` after the complete
+inventory is collected. Finalization snapshots every entry from `recon.json`
+into the run-scoped shared-memory database and writes `recon_complete.json` as
+the durable handoff marker.
+
+The root reads `list_recon` and dispatches focused children only when an
+observation supports a component/risk hypothesis. Reportable or high-impact
+results receive an independent `validator`. One `chain_reviewer` runs after
+specialists finish to connect findings, information, and hypotheses into
+validated impact chains.
+
+## Dispatch metadata
+
+Each `create_agent` call should include:
+
+- `role`: `recon`, `source_mapper`, `specialist`, `validator`, `gap_closer`, or `chain_reviewer`;
+- `component`: one trust boundary or product component;
+- `risk_area`: one vulnerability family or hypothesis;
+- `phase`: `discovery`, `testing`, `validation`, or `impact_review`;
+- `evidence_ids`: recon, request, or finding identifiers supporting the task;
+- `stop_conditions`: explicit completion conditions;
+- `dispatch_key`: stable `component|risk|phase` identity.
+
+The runtime rejects duplicate dispatch keys and refuses every specialist on a
+live quick/standard/deep scan until `finalize_recon` has completed. Scan
+completion is guarded by the same marker. It also applies a bounded concurrent
+child limit: 2 for quick, 4 for standard, and 6 for deep scans.
+
+Do not create one child per subdomain, endpoint, or parameter. Group work by
+trust boundary and risk area, and reuse a running/completed child when its
+dispatch key already covers the evidence.
+

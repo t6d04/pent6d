@@ -1,0 +1,136 @@
+"""Jinja-based system-prompt renderer."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from strix.skills import get_available_skills, load_skills, skill_search_dirs
+from strix.utils.resource_paths import get_strix_resource_path
+
+
+logger = logging.getLogger(__name__)
+
+
+_PROMPT_DIRNAME = "prompts"
+
+
+def _resolve_skills(
+    *,
+    requested: list[str] | None,
+    scan_mode: str = "deep",
+    is_whitebox: bool = False,
+    is_root: bool = False,
+    is_diff_scoped: bool = False,
+) -> list[str]:
+    """Build the deduped, ordered skills list for the prompt render.
+
+    Order:
+
+    1. Whatever the caller asked for, in order.
+    2. ``scan_modes/<mode>`` (always), plus ``scan_modes/diff`` when the
+       run is scoped to a change set — diff scope overlays the depth
+       mode rather than replacing it.
+    3. ``tooling/agent_browser`` and ``tooling/python`` for child agents;
+       the root has no target-touching shell or filesystem capabilities.
+    4. ``analysis/counterevidence``, ``analysis/severity_calibration``, and
+       ``analysis/triage_validation`` (always — closure, reporting gates,
+       and severity discipline apply to every agent that can open or close a
+       candidate, or file a report).
+    5. ``coordination/root_agent`` and ``reconnaissance/scope_triage`` for
+       the root agent only — orchestration and authorization-aware scope
+       guidance for delegating to specialist subagents.
+    6. Whitebox-specific skills if applicable, including
+       ``analysis/fix_verification`` (only whitebox agents can attach an
+       applyable ``fix_after``) and ``analysis/source_aware_discovery``.
+    """
+    ordered: list[str] = list(requested or [])
+    ordered.append(f"scan_modes/{scan_mode}")
+    # HexStrike is an optional local MCP backend.  Keep its bounded usage and
+    # persistence rules in every agent prompt so a connected sidecar is useful
+    # without becoming an untracked second workflow.
+    ordered.append("tooling/hexstrike")
+    if is_diff_scoped:
+        ordered.append("scan_modes/diff")
+    if not is_root:
+        ordered.append("tooling/agent_browser")
+        ordered.append("tooling/python")
+    ordered.append("analysis/counterevidence")
+    ordered.append("analysis/severity_calibration")
+    ordered.append("analysis/triage_validation")
+    if is_root:
+        ordered.append("coordination/root_agent")
+        ordered.append("reconnaissance/scope_triage")
+    if is_whitebox:
+        ordered.append("coordination/source_aware_whitebox")
+        ordered.append("coordination/verified_whitebox_audit")
+        ordered.append("custom/source_aware_sast")
+        ordered.append("analysis/source_aware_discovery")
+        ordered.append("analysis/fix_verification")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for skill in ordered:
+        if skill and skill not in seen:
+            deduped.append(skill)
+            seen.add(skill)
+    return deduped
+
+
+def render_system_prompt(
+    *,
+    skills: list[str] | None = None,
+    scan_mode: str = "deep",
+    is_whitebox: bool = False,
+    is_root: bool = False,
+    is_diff_scoped: bool = False,
+    interactive: bool = False,
+    chat_mode: bool = False,
+    system_prompt_context: dict[str, Any] | None = None,
+) -> str:
+    """Render the system prompt. Returns empty string on template failure."""
+    try:
+        prompt_dir = get_strix_resource_path("agents", _PROMPT_DIRNAME)
+        loader_dirs = [prompt_dir, *skill_search_dirs()]
+        env = Environment(
+            loader=FileSystemLoader(loader_dirs),
+            autoescape=select_autoescape(
+                enabled_extensions=(),
+                default_for_string=False,
+            ),
+        )
+
+        skills_to_load = _resolve_skills(
+            requested=skills,
+            scan_mode=scan_mode,
+            is_whitebox=is_whitebox,
+            is_root=is_root,
+            is_diff_scoped=is_diff_scoped,
+        )
+        skill_content = load_skills(skills_to_load)
+        env.globals["get_skill"] = lambda name: skill_content.get(name, "")
+
+        rendered = env.get_template("system_prompt.jinja").render(
+            loaded_skill_names=list(skill_content.keys()),
+            available_skills=get_available_skills(),
+            interactive=interactive,
+            chat_mode=chat_mode,
+            is_root=is_root,
+            system_prompt_context=system_prompt_context or {},
+            **skill_content,
+        )
+    except Exception:
+        logger.exception("render_system_prompt failed; returning empty prompt")
+        return ""
+    else:
+        logger.debug(
+            "render_system_prompt: scan_mode=%s root=%s whitebox=%s skills=%d prompt_len=%d",
+            scan_mode,
+            is_root,
+            is_whitebox,
+            len(skill_content),
+            len(rendered),
+        )
+        return str(rendered)
