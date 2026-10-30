@@ -14,7 +14,7 @@ from strix.core.sessions import session_write_lock
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from agents.items import TResponseInputItem
     from agents.memory import Session
@@ -70,6 +70,7 @@ class AgentCoordinator:
         self._budget_paused = False
         self.recon_finalized = False
         self._extend_budget: Callable[[], None] | None = None
+        self._followup_dispatcher: Callable[[], Awaitable[dict[str, Any]]] | None = None
 
     def set_snapshot_path(self, path: Path) -> None:
         self._snapshot_path = path
@@ -98,6 +99,24 @@ class AgentCoordinator:
 
     def set_budget_extender(self, extend: Callable[[], None]) -> None:
         self._extend_budget = extend
+
+    def set_followup_dispatcher(
+        self, dispatcher: Callable[[], Awaitable[dict[str, Any]]]
+    ) -> None:
+        """Register the runner-owned bridge for automatic graph follow-ups."""
+        self._followup_dispatcher = dispatcher
+
+    async def dispatch_ready_followups(self) -> dict[str, Any]:
+        """Run the registered follow-up bridge, if this scan has one."""
+        dispatcher = self._followup_dispatcher
+        if dispatcher is None:
+            return {"success": True, "dispatched": [], "automatic": False}
+        try:
+            result = await dispatcher()
+        except (RuntimeError, TypeError, ValueError) as exc:
+            logger.exception("automatic follow-up dispatch failed")
+            return {"success": False, "dispatched": [], "error": str(exc), "automatic": True}
+        return {**result, "automatic": True}
 
     async def pause_for_budget(self, agent_id: str) -> None:
         async with self._lock:

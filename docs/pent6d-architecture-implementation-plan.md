@@ -479,6 +479,9 @@ Nếu phải triển khai từng phần, thứ tự nên là:
   dependency; các task này idempotent theo `dispatch_key`.
 - [x] Root có `dispatch_ready_tasks` để chạy các follow-up đã ready, giữ giới
   hạn concurrency và bind agent runtime vào graph task.
+- [x] Runner đăng ký callback scheduler vào `AgentCoordinator`; sau
+  `agent_finish`, follow-up ready được tự dispatch ngay, còn tool thủ công vẫn
+  là đường retry/resume khi spawn bị giới hạn hoặc lỗi.
 
 Các phần tiếp theo chưa bật mặc định gồm scheduler đọc attack graph, independent
 validator orchestration, reflection loop và UI graph view. Chúng sẽ được triển

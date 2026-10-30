@@ -1126,6 +1126,12 @@ async def agent_finish(
             )
             scheduled_tasks = list(follow_up.get("scheduled_tasks") or [])
 
+    # Mark the current child terminal before dispatching so its slot is
+    # released and the follow-up scheduler can use the full concurrency budget.
+    await coordinator.set_status(me, "completed")
+    automatic_dispatch = await coordinator.dispatch_ready_followups()
+    automatic_tasks = list(automatic_dispatch.get("dispatched") or [])
+
     parent_notified = False
     if report_to_parent and await coordinator.claim_parent_notice(me):
         async with coordinator._lock:
@@ -1147,6 +1153,13 @@ async def agent_finish(
                 f"({task.get('status')})"
                 for task in scheduled_tasks
             )
+        if automatic_tasks:
+            report += "\n\n[Workflow scheduler] Automatically dispatched:\n" + "\n".join(
+                f"- {item.get('agent', {}).get('agent_id', '')}: "
+                f"{item.get('task', {}).get('role', 'follow-up')} — "
+                f"{item.get('task', {}).get('title', '')}"
+                for item in automatic_tasks
+            )
         await coordinator.send(
             parent_id,
             {
@@ -1161,7 +1174,6 @@ async def agent_finish(
         )
         parent_notified = True
 
-    await coordinator.set_status(me, "completed")
     if not parent_notified:
         # Silence here would leave a parent waiting on a report that is never coming.
         await notify_parent_on_terminal(coordinator, me, "completed")
@@ -1184,6 +1196,7 @@ async def agent_finish(
             "summary": result_summary,
             "filed_report_ids": filed_report_ids,
             "scheduled_tasks": scheduled_tasks,
+            "automatic_dispatch": automatic_dispatch,
             "findings_count": len(findings or []),
             "open_items_count": len(open_items or []),
             "has_recommendations": bool(final_recommendations),

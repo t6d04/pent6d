@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents import RunConfig
 from agents.sandbox import SandboxRunConfig
+from agents.tool_context import ToolContext
 from openai import RateLimitError
 
 from strix.agents.factory import build_strix_agent, make_child_factory
@@ -51,6 +52,7 @@ from strix.runtime.attack_graph import AttackGraph
 from strix.runtime.supervisor import RunPhase, RunStatus, RunSupervisor
 from strix.telemetry import set_scan_phase
 from strix.telemetry.logging import set_scan_id, setup_scan_logging
+from strix.tools.agents_graph.tools import dispatch_ready_tasks
 from strix.tools.output_store import (
     WORKSPACE_SPILL_DIR,
     configure_spill_writer,
@@ -616,6 +618,32 @@ async def run_strix_scan(
             "state_dir": state_dir,
             "max_context_images": settings.runtime.max_context_images,
         }
+
+        async def _dispatch_followups() -> dict[str, Any]:
+            """Dispatch scheduler-created follow-ups from the root context."""
+            tool_ctx = ToolContext(
+                context=context,
+                tool_name="dispatch_ready_tasks",
+                tool_call_id=f"auto-followup-{uuid.uuid4().hex[:8]}",
+                tool_arguments=json.dumps({"max_tasks": context["max_concurrent_children"]}),
+            )
+            raw = await dispatch_ready_tasks.on_invoke_tool(
+                tool_ctx,
+                json.dumps({"max_tasks": context["max_concurrent_children"]}),
+            )
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "invalid follow-up dispatcher response"}
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"success": False, "error": "invalid follow-up dispatcher response"}
+            if isinstance(raw, dict):
+                return raw
+            return {"success": False, "error": "invalid follow-up dispatcher response"}
+
+        coordinator.set_followup_dispatcher(_dispatch_followups)
 
         root_session = open_agent_session(root_id, agents_db)
         sessions_to_close.append(root_session)

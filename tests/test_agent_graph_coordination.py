@@ -452,6 +452,41 @@ async def test_agent_finish_lists_the_reports_the_child_filed(report_state: Repo
 
 
 @pytest.mark.asyncio
+async def test_agent_finish_triggers_automatic_followup_dispatch(
+    report_state: ReportState, tmp_path: Path
+) -> None:
+    del report_state
+    coordinator = await _graph(interactive=False)
+    graph = AttackGraph(tmp_path)
+    await graph.add_task(
+        title="Validate authorization",
+        role="specialist",
+        phase="execution",
+        dispatch_key="api|idor|testing",
+        metadata={"agent_id": "child", "skills": ["vulnerabilities/idor"]},
+    )
+    called: list[bool] = []
+
+    async def _dispatch() -> dict[str, Any]:
+        called.append(True)
+        return {"success": True, "dispatched": [{"agent": {"agent_id": "validator"}}]}
+
+    coordinator.set_followup_dispatcher(_dispatch)
+    result = await _call(
+        agent_finish,
+        coordinator,
+        "child",
+        {"result_summary": "completed"},
+        parent_id="root",
+        attack_graph=graph,
+    )
+
+    assert result["automatic_dispatch"]["automatic"] is True
+    assert called == [True]
+    assert coordinator.statuses["child"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_agent_finish_states_explicitly_when_nothing_was_filed(
     report_state: ReportState,
 ) -> None:
