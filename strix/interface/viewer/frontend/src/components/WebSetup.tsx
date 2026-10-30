@@ -11,6 +11,20 @@ type Props = {
   embedded?: boolean;
 };
 
+/** Split pasted scope input while preserving the order in which it was entered. */
+function parseTargets(value: string): string[] {
+  const seen = new Set<string>();
+  const targets: string[] = [];
+  for (const candidate of value.split(/[\r\n,;]+/)) {
+    const target = candidate.trim();
+    if (target && !seen.has(target)) {
+      seen.add(target);
+      targets.push(target);
+    }
+  }
+  return targets;
+}
+
 export default function WebSetup({
   control,
   onRefresh,
@@ -49,9 +63,11 @@ export default function WebSetup({
   };
 
   const addTarget = () => run(async () => {
-    const value = target.trim();
-    if (!value) throw new Error("Enter a URL, repository, local directory, domain, or API spec first.");
-    await webCommand("setup.add_target", { target: value });
+    const targets = parseTargets(target);
+    if (targets.length === 0) throw new Error("Enter at least one URL, repository, local directory, domain, or API spec.");
+    for (const value of targets) {
+      await webCommand("setup.add_target", { target: value });
+    }
     setTarget("");
   });
 
@@ -205,11 +221,24 @@ export default function WebSetup({
             </div>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <input value={target} onChange={(event) => setTarget(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void addTarget(); }} placeholder="https://staging.example.com or D:\Projects\app" className="min-w-0 flex-1 rounded-md border border-[#333] bg-black px-3 py-2.5 text-sm outline-none focus:border-white" />
+            <textarea
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void addTarget();
+                }
+              }}
+              rows={3}
+              placeholder={'https://staging.example.com\nhttps://api.example.com, https://admin.example.com; D:\\Projects\\app'}
+              className="min-w-0 flex-1 resize-y rounded-md border border-[#333] bg-black px-3 py-2.5 text-sm outline-none focus:border-white"
+            />
             <button disabled={busy} onClick={() => void addTarget()} className="inline-flex items-center justify-center gap-2 rounded-md border border-[#444] px-4 py-2.5 text-sm font-semibold hover:border-[#777] disabled:opacity-50">
               <Plus className="h-4 w-4" aria-hidden="true" /> Add target
             </button>
           </div>
+          <p className="text-xs text-[#777]">Paste multiple targets separated by new lines, commas, or semicolons. Press Enter to add; use Shift+Enter for a new line.</p>
           {initial.targets.length > 0 ? <ul className="space-y-2">{initial.targets.map((value) => (
             <li key={value} className="flex items-center justify-between gap-4 rounded-md bg-black px-3 py-2 text-sm">
               <code className="min-w-0 truncate text-[#d4d4d4]">{value}</code>

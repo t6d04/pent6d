@@ -1,6 +1,6 @@
 ---
 name: web-attack-surface
-description: Scope-aware web attack-surface discovery combining historical URLs, hidden parameters, JavaScript analysis, visual triage, sensitive-file checks, and technology-specific pivots
+description: Target-bounded web attack-surface discovery combining historical URLs, hidden parameters, JavaScript analysis, visual triage, sensitive-file checks, and technology-specific pivots
 ---
 
 # Web Attack-Surface Discovery
@@ -9,18 +9,23 @@ Use this skill after the initial asset inventory is available and before
 vulnerability specialists are dispatched. The output is an evidence-backed
 map of reachable web surfaces, not a generic scanner dump.
 
-## Safety and Scope Gate
+## Target Boundaries and Active Testing
 
-Before any active request:
+Use the run's declared targets and project instruction as the operational
+boundary. A discovered hostname is eligible for active testing when it matches
+an explicitly supplied target or wildcard; do not expand to unrelated
+third-party neighbors merely because DNS, certificates, a CDN, or a bundle
+mentions them. This is a target-selection rule, not a separate authorization
+workflow, and it does not downgrade matching hosts to passive-only review.
 
-1. Load `scope_triage` and classify every host, URL, IP, repository, and
-   third-party provider as `in_scope`, `needs_confirmation`, or `out_of_scope`.
-2. Keep passive observations for uncertain assets, but do not crawl, fuzz,
-   authenticate, submit forms, or run exploit checks against them.
-3. Apply the target's agreed request rate, concurrency, depth, and duration.
+For every active request:
+
+1. Apply the target's agreed request rate, concurrency, depth, and duration.
    Use explicit limits on every crawler/fuzzer command.
-4. Treat API keys and returned secrets as sensitive evidence. Redact them in
-   notes and never use a discovered credential outside the authorized target.
+2. Treat API keys and returned secrets as sensitive evidence. Redact them in
+   notes and do not reuse credentials against a different target.
+3. Keep provenance and the target match on every observation so downstream
+   specialists know why the host was selected.
 
 ## Required Inventory
 
@@ -37,10 +42,19 @@ use kind=js_leak with redacted evidence and confidence=unverified until checked;
 record JS/source-map URLs separately as kind=javascript. A recon observation
 is not a vulnerability report; link confirmed reports with finding_id.
 
+At the end of each workstream, call `record_recon_coverage` with the tools and
+a concise evidence summary describing what was established. A tool name alone
+is not evidence. Use `not_applicable` only when the target genuinely has no such
+surface; use `blocked` when a prerequisite prevented testing. Do not silently
+omit a phase.
+
 For each in-scope asset, retain:
 
 - canonical URL/host, scheme, port, IP and source of discovery;
 - scope decision and attribution evidence;
+- an explicit attribution level (`confirmed`, `likely`, `unknown`, or
+  `out_of_scope`) with the certificate, DNS ownership, vhost, organization,
+  cloud-account, or program-scope evidence supporting it;
 - HTTP status, title, server, technology/version, TLS certificate names and
   redirect chain;
 - route, method, parameter, content type, authentication role and object/tenant

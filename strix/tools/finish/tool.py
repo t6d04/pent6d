@@ -271,7 +271,7 @@ def _live_host_coverage_gate(
     }
 
 
-def _do_finish(
+def _do_finish(  # noqa: PLR0911
     *,
     parent_id: str | None,
     executive_summary: str,
@@ -326,6 +326,19 @@ def _do_finish(
                 ),
                 "chain_review": chain_status,
             }
+        coverage_summary = _coverage_summary(agent_graph)
+        unresolved_surfaces = coverage_summary.get("unresolved_surfaces")
+        if isinstance(unresolved_surfaces, list) and unresolved_surfaces:
+            return {
+                "success": False,
+                "error": (
+                    "Coverage still contains needs_follow_up surfaces. Continue the "
+                    "validation, or update each existing row to reported, "
+                    "informational, no_issue_found, ruled_out, or not_applicable "
+                    "with concrete evidence before calling finish_scan."
+                ),
+                "coverage": coverage_summary,
+            }
         report_state.update_scan_final_fields(
             executive_summary=executive_summary.strip(),
             methodology=methodology.strip(),
@@ -333,7 +346,6 @@ def _do_finish(
             recommendations=recommendations.strip(),
         )
         vuln_count = len(report_state.vulnerability_reports)
-        coverage_summary = _coverage_summary(agent_graph)
     except (ImportError, AttributeError) as e:
         logger.exception("finish_scan persistence failed")
         return {"success": False, "error": f"Failed to complete scan: {e!s}"}
@@ -386,8 +398,8 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
     if unresolved:
         summary["coverage_warning"] = (
             f"{len(unresolved)} surface(s) closed as 'needs_follow_up' and remain "
-            "unresolved. These should be represented in the report as areas requiring "
-            "further review rather than omitted."
+            "unresolved. finish_scan will remain blocked until they are validated "
+            "or moved to a terminal outcome with evidence."
         )
         summary["unresolved_surfaces"] = [
             {"surface": e.get("surface", ""), "risk_area": e.get("risk_area", "")}
@@ -468,11 +480,12 @@ async def finish_scan(
     5. **Coverage reconciliation.** Call ``list_coverage`` and check
        what was actually assessed against the surfaces you enumerated
        during reconnaissance. Every surface you dispatched work on
-       should have a coverage entry; anything still open should be a
-       ``needs_follow_up`` row, not a silent omission. If a significant
-       surface has no entry at all, dispatch an agent to cover it or
-       record it as ``needs_follow_up`` before finishing. The response
-       from this tool reports coverage counts and any unresolved rows.
+       should have a coverage entry. Anything still open may be recorded as a
+       temporary ``needs_follow_up`` row, but it is not a terminal state:
+       dispatch a validator and update the existing row before finishing. If
+       a significant surface has no entry at all, dispatch an agent to cover it
+       or record it as ``needs_follow_up`` and then resolve it. The runtime
+       blocks ``finish_scan`` while unresolved rows remain.
      6. **Mapper delegation gate.** Every live quick, standard, or deep run
         must have a completed recon/source-mapper child before this tool can
         succeed. This keeps even time-boxed quick runs evidence-based.

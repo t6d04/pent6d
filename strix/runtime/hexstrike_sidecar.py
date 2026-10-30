@@ -21,7 +21,11 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 logger = logging.getLogger(__name__)
@@ -88,7 +92,11 @@ def _port_available(host: str, port: int) -> bool:
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        # SO_EXCLUSIVEADDRUSE is Windows-only. Linux already rejects a second
+        # bind for this probe by default, so do not access the missing constant
+        # there (otherwise HexStrike autostart fails before health checking).
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         probe.bind((host, port))
     except OSError:
         return False
@@ -161,7 +169,7 @@ def _python_executable(base_dir: Path) -> Path | None:
 
 
 @contextlib.contextmanager
-def _startup_lock(lock_path: Path):
+def _startup_lock(lock_path: Path) -> Iterator[None]:
     """Acquire a small cross-process lock without an extra dependency."""
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)

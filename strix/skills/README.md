@@ -49,9 +49,10 @@ Notable source-aware skills:
 - `browser_security` (vulnerabilities): browsing-context, postMessage, XS-Leaks, service-worker, and cross-origin state-machine testing
 - `second_order_sqli` (vulnerabilities): deferred SQL query construction through stored fields and later consumers
 - `shadow_api` (vulnerabilities): undocumented, legacy, client-inferred, and version-drift API surfaces
-- `scope_triage` (reconnaissance): authorization-aware handling of discovered hosts and routes before active testing
-- `web_attack_surface` (reconnaissance): historical URLs, hidden parameters, JavaScript, sensitive files, visual triage, and scope-aware web attack-surface handoff
+- `web_attack_surface` (reconnaissance): historical URLs, hidden parameters, JavaScript, sensitive files, visual triage, and target-bounded web attack-surface handoff
 - `recon_enrichment` (tooling): bounded command patterns for passive-source enrichment, DNS permutation, URL history, parameter mining, and JS triage
+- `hupsms` (tooling): bounded temporary-number and OTP workflow for explicitly authorized signup/authentication tests
+- `mfa_secrets` (agent tools): run-scoped TOTP seed/QR preservation and fresh-code generation for authorized test accounts
 - `triage_validation` (analysis): evidence-first reportability gate for candidates and known CVEs
 - `evidence_hygiene` (analysis): redaction and minimum-evidence handling for reports and artifacts
 - `default_credentials` (vulnerabilities): product/version-specific vendor research and bounded validation of documented default or bootstrap credentials

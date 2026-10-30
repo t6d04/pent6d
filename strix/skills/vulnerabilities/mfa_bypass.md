@@ -47,5 +47,19 @@ resetting factors on real users.
   lock out a real account, weaken a production factor, or retain test factors
   after the run.
 
+For an explicitly authorized SMS-MFA test identity, load `hupsms`, rent one
+number, and poll its order with `hupsms_check`. Use the OTP only once to
+exercise the current challenge. Do not use the connector to create bulk
+accounts or bypass provider/target rate limits; preserve only redacted state
+transitions and timestamps.
+
+For TOTP enrollment on a dedicated test account, preserve both forms of the
+factor before testing login: capture the text `otpauth`/base32 secret and the
+QR screenshot, then call `mfa_secret_store` with a run-unique label. Verify
+with `mfa_secret_status`; generate a fresh code for each login or step-up with
+`mfa_totp_code`. Never put the seed, QR image, or generated code in shared
+memory, agent messages, findings, or screenshots that leave the private run
+directory. Rotate/revoke the factor after testing when the target supports it.
+
 A valid MFA finding requires a protected consequence attributable to the
 missing or misbound factor, with denied and successful controls recorded.

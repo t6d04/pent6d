@@ -339,9 +339,9 @@ def test_recon_handoff_requires_structured_downstream_candidates() -> None:
     assert "ROOT AGENT: after recon results arrive" not in prompt
 
 
-def test_resolve_skills_adds_scope_triage_for_root_only() -> None:
+def test_resolve_skills_does_not_inject_scope_triage() -> None:
     assert "reconnaissance/scope_triage" not in _resolve_skills(requested=None)
-    assert "reconnaissance/scope_triage" in _resolve_skills(requested=None, is_root=True)
+    assert "reconnaissance/scope_triage" not in _resolve_skills(requested=None, is_root=True)
 
 
 def test_resolve_skills_adds_diff_mode_only_when_diff_scoped() -> None:
@@ -392,7 +392,6 @@ def test_new_skill_files_load() -> None:
         "analysis/fix_verification",
         "analysis/source_aware_discovery",
         "coordination/verified_whitebox_audit",
-        "reconnaissance/scope_triage",
         "reconnaissance/web_attack_surface",
         "tooling/recon_enrichment",
         "tooling/hexstrike",

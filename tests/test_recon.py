@@ -8,14 +8,19 @@ from typing import TYPE_CHECKING
 import pytest
 from agents.tool_context import ToolContext
 
+from strix.core.agents import AgentCoordinator
 from strix.tools.recon.tools import (
     ReconObservation,
     _copy_screenshot,
     _finalize_recon_sync,
+    _required_coverage,
     _save,
+    _save_coverage,
     finalize_recon,
+    list_recon_coverage,
     read_recon,
     record_recon,
+    record_recon_coverage,
     record_source_leak,
 )
 
@@ -64,6 +69,35 @@ def test_alive_is_service_state_and_projects_to_passive_host_record(tmp_path: Pa
     host = next(entry for entry in entries if entry["kind"] == "subdomain")
     assert host["alive"] == "alive"
     assert host["status_code"] == 404
+
+
+def test_attribution_is_persisted_and_out_of_scope_is_consistent(tmp_path: Path) -> None:
+    _save(
+        tmp_path,
+        [
+            ReconObservation(
+                kind="subdomain",
+                value="api.example.com",
+                source="crt.sh",
+                scope="in_scope",
+                attribution="likely",
+                attribution_evidence="Certificate SAN matches the in-scope wildcard",
+            ).model_dump(),
+            ReconObservation(
+                kind="subdomain",
+                value="other.example.net",
+                source="shared IP",
+                scope="out_of_scope",
+                attribution="confirmed",
+            ).model_dump(),
+        ],
+        "recon",
+    )
+
+    entries = read_recon(tmp_path)["entries"]
+    assert entries[0]["attribution"] == "likely"
+    assert entries[0]["attribution_evidence"]
+    assert entries[1]["attribution"] == "out_of_scope"
 
 
 def test_proxy_error_does_not_mark_service_alive_or_dead(tmp_path: Path) -> None:
@@ -221,6 +255,163 @@ def test_finalize_recon_requires_screenshot_for_each_live_host(tmp_path: Path) -
     assert result["missing_screenshot_hosts"] == ["live.example.com"]
 
 
+def test_required_coverage_is_target_aware() -> None:
+    web = _required_coverage(scan_mode="deep", target_types=["web_application"])
+    assert "web_surface" in web
+    assert "javascript_analysis" in web
+    assert "visual_capture" in web
+
+    ip = _required_coverage(scan_mode="standard", target_types=["ip_address"])
+    assert "service_discovery" in ip
+    assert "visual_capture" not in ip
+
+
+def test_read_recon_exposes_required_coverage_from_run_record(tmp_path: Path) -> None:
+    (tmp_path / "run.json").write_text(
+        json.dumps(
+            {
+                "scan_mode": "standard",
+                "scan_target_types": ["web_application"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = read_recon(tmp_path)
+    assert document["required_coverage"] == _required_coverage(
+        scan_mode="standard", target_types=["web_application"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_recon_coverage_is_persisted_and_reports_gaps(tmp_path: Path) -> None:
+    ctx = ToolContext(
+        context={
+            "state_dir": tmp_path / ".state",
+            "agent_id": "mapper",
+            "scan_mode": "deep",
+            "scan_target_types": ["web_application"],
+        },
+        tool_name="record_recon_coverage",
+        tool_call_id="test",
+        tool_arguments="{}",
+    )
+    result = json.loads(
+        await record_recon_coverage.on_invoke_tool(
+            ctx,
+            json.dumps(
+                {
+                    "coverage_json": json.dumps(
+                        [
+                            {
+                                "category": "asset_discovery",
+                                "status": "completed",
+                                "tools": ["subfinder", "crt.sh"],
+                                "evidence": "12 candidates recorded",
+                            },
+                            {
+                                "category": "javascript_analysis",
+                                "status": "not_applicable",
+                                "reason": "No JavaScript resources were returned by the API target",
+                            },
+                        ]
+                    )
+                }
+            ),
+        )
+    )
+    assert result["success"]
+
+    missing_evidence = json.loads(
+        await record_recon_coverage.on_invoke_tool(
+            ctx,
+            json.dumps(
+                {
+                    "coverage_json": json.dumps(
+                        [
+                            {
+                                "category": "live_probe",
+                                "status": "completed",
+                                "tools": ["httpx"],
+                            }
+                        ]
+                    )
+                }
+            ),
+        )
+    )
+    assert missing_evidence["success"] is False
+    assert "evidence summary" in missing_evidence["error"]
+
+    listed = json.loads(await list_recon_coverage.on_invoke_tool(ctx, "{}"))
+    assert listed["complete"] is False
+    assert "live_probe" in listed["missing"]
+    assert any(entry["category"] == "asset_discovery" for entry in listed["entries"])
+
+
+def test_finalize_recon_requires_coverage_contract_for_live_deep_scan(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    state_dir = run_dir / ".state"
+    _save(
+        run_dir,
+        [
+            ReconObservation(
+                kind="endpoint", value="https://example.com", source="httpx"
+            ).model_dump()
+        ],
+        "recon",
+    )
+
+    result = _finalize_recon_sync(
+        run_dir,
+        state_dir,
+        agent_id="root",
+        agent_name="Root Agent",
+        required_coverage=["asset_discovery", "live_probe"],
+    )
+
+    assert result["success"] is False
+    assert result["missing_coverage"] == ["asset_discovery", "live_probe"]
+
+
+def test_finalize_recon_persists_coverage_in_completion_marker(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    state_dir = run_dir / ".state"
+    _save(
+        run_dir,
+        [
+            ReconObservation(
+                kind="endpoint", value="https://example.com", source="httpx"
+            ).model_dump()
+        ],
+        "recon",
+    )
+    _save_coverage(
+        run_dir,
+        [
+            {
+                "category": "asset_discovery",
+                "status": "completed",
+                "tools": ["subfinder"],
+                "evidence": "12 candidate hosts recorded in recon.json",
+            }
+        ],
+        "mapper",
+    )
+
+    result = _finalize_recon_sync(
+        run_dir,
+        state_dir,
+        agent_id="root",
+        agent_name="Root Agent",
+        required_coverage=["asset_discovery"],
+    )
+
+    assert result["success"] is True
+    marker = json.loads((run_dir / "recon_complete.json").read_text(encoding="utf-8"))
+    assert marker["required_coverage"] == ["asset_discovery"]
+    assert marker["coverage"][0]["category"] == "asset_discovery"
+
+
 def test_one_screenshot_covers_service_and_alias_records(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     state_dir = run_dir / ".state"
@@ -286,8 +477,6 @@ async def test_finalize_recon_waits_for_active_mapper(tmp_path: Path) -> None:
         [ReconObservation(kind="service", value="443/tcp", source="recon").model_dump()],
         "recon",
     )
-    from strix.core.agents import AgentCoordinator
-
     coordinator = AgentCoordinator()
     await coordinator.register("root", "Root", parent_id=None, role="root")
     await coordinator.register("mapper", "Recon mapper", parent_id="root", role="recon")

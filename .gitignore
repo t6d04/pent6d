@@ -52,6 +52,8 @@ pip-delete-this-directory.txt
 .env.development.local
 .env.test.local
 .env.production.local
+.env.mailbox.local
+.env.hupsms.local
 
 # MongoDB
 /data/

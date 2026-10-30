@@ -39,9 +39,10 @@ def _resolve_skills(
        ``analysis/triage_validation`` (always — closure, reporting gates,
        and severity discipline apply to every agent that can open or close a
        candidate, or file a report).
-    5. ``coordination/root_agent`` and ``reconnaissance/scope_triage`` for
-       the root agent only — orchestration and authorization-aware scope
-       guidance for delegating to specialist subagents.
+    5. ``coordination/root_agent`` for the root agent only — orchestration
+       guidance for delegating to specialist subagents. Target boundaries come
+       from the run configuration and project instruction; no extra
+       scope-triage skill is injected automatically.
     6. Whitebox-specific skills if applicable, including
        ``analysis/fix_verification`` (only whitebox agents can attach an
        applyable ``fix_after``) and ``analysis/source_aware_discovery``.
@@ -62,7 +63,6 @@ def _resolve_skills(
     ordered.append("analysis/triage_validation")
     if is_root:
         ordered.append("coordination/root_agent")
-        ordered.append("reconnaissance/scope_triage")
     if is_whitebox:
         ordered.append("coordination/source_aware_whitebox")
         ordered.append("coordination/verified_whitebox_audit")

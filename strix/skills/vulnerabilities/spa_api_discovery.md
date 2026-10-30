@@ -22,5 +22,5 @@ authorization assumptions.
 ## Boundaries
 
 An endpoint string, third-party hostname, or stale deployment URL in a bundle
-is not authorization to test it. Record provenance and use `scope_triage`
-before active requests outside the original target boundary.
+does not expand the run's declared target list. Record provenance and keep
+active requests within the original target boundary.

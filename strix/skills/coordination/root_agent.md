@@ -70,6 +70,13 @@ evidence; if capture is genuinely impossible, record the exact
 and record access/capture barriers.
 Never treat missing recon records as proof that a surface was tested.
 
+In addition to rows, the mapper must maintain the recon coverage contract with
+`record_recon_coverage` and inspect it with `list_recon_coverage`. Record every
+required workstream as `completed`, or explicitly `not_applicable` with a scope
+reason. `blocked` and `not_run` are unresolved gaps and do not unlock
+`finalize_recon`. This prevents a minimal inventory plus one screenshot from
+being mistaken for complete reconnaissance.
+
 `alive` is a service-state claim, not a discovery claim. A real origin response
 (including 401, 403, 404, or 5xx) marks the host alive; DNS, CT, certificates,
 portal links, and other passive evidence remain unknown until probed. Caido or
@@ -121,7 +128,8 @@ specific hypothesis instead of redoing recon.
 
 Route control and bypass signals explicitly: login/session/gateway or partial
 auth state → `authentication_bypass` plus the protocol skill; MFA/OTP/recovery
-→ `mfa_bypass` and `anti_automation_controls`; observed WAF/CDN/block page →
+→ `mfa_bypass` and `anti_automation_controls`, and load `hupsms` only when an
+authorized SMS test identity is required; observed WAF/CDN/block page →
 `waf_evasion`; sanitizer/allowlist/schema/canonicalization or content-type
 drift → `input_filter_bypass` plus the sink-specific vulnerability skill.
 Do not report a bypass from a status-code difference without a protected
@@ -178,7 +186,7 @@ not dispatch, ensure the relevant specialist records `not_applicable` with a
 
 ## Reconcile Coverage Before Finishing
 
-Coverage entries are shared and mutable. Before `finish_scan`, list the `needs_follow_up` rows: each one is either work you still owe or a row somebody already resolved without updating. Assign the former to a subagent and have it call `update_coverage` on the existing entry rather than recording a second one — a stale open item sitting next to its own resolution is worse than either alone.
+Coverage entries are shared and mutable. Before `finish_scan`, list the `needs_follow_up` rows: each one is either work you still owe or a row somebody already resolved without updating. Assign the former to a subagent and have it call `update_coverage` on the existing entry rather than recording a second one — a stale open item sitting next to its own resolution is worse than either alone. `needs_follow_up` is temporary, not a terminal outcome: the runtime blocks `finish_scan` while any such row remains. Resolve every row as `reported`, `informational`, `no_issue_found`, `ruled_out`, or `not_applicable` with concrete evidence.
 
 ## Mandatory Chain and Impact Review
 

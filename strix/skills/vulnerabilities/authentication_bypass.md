@@ -65,6 +65,24 @@ valid but accepted by the wrong service is an authentication-boundary bypass.
 4. Stop after a minimal proof; do not access real user data, alter roles,
    change passwords, create persistence, or enumerate accounts at scale.
 
+### Email Verification and Signup
+
+For an explicitly authorized registration flow, use the dedicated test mailbox
+profile to complete email verification. Generate a unique alias under the
+engagement's forwarding domain, record the action timestamp, then use
+`mailbox_search` and `mailbox_read` to retrieve only the matching verification
+message or OTP. Keep the mailbox session separate from the target's user
+session and never reuse a link/code across aliases or runs. After the account
+is verified, continue with the lowest-privilege test principal and compare the
+same protected action against anonymous and authenticated baselines.
+
+If the target requires SMS verification, load `hupsms` and use one bounded
+temporary-number rental for the dedicated test identity. Poll the matching
+order with `hupsms_check`, submit the returned OTP once, and do not treat
+provider delivery as proof of bypass. Check account/session/action binding,
+replay protection, expiry, and alternate verification paths while keeping raw
+phone and OTP values out of evidence.
+
 ## Reporting
 
 Record the exact principal transition, route, preconditions, baseline/control,

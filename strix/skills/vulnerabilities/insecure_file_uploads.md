@@ -172,8 +172,8 @@ Upload surfaces are high risk: server-side execution (RCE), stored XSS, malware 
 - Use test objects and redact tokens, signed URLs, unrelated file names, and
   user data before reporting. Load `evidence_hygiene` before exporting proof.
 - Direct-to-storage URLs, CDN hostnames, and processor callbacks can be
-  third-party infrastructure. Verify they are included in the engagement
-  scope before active testing; use `scope_triage` for ambiguous assets.
+  third-party infrastructure. Verify they match the declared engagement
+  targets before active testing and keep the provider boundary explicit.
 
 ## False Positives
 

@@ -20,6 +20,36 @@ device trust, and session revocation for an operator-owned test account.
 - Weak anti-automation or MFA controls; load `mfa_bypass` only when the
   engagement permits authentication-flow testing.
 
+## Mailbox-Assisted Test Identity Workflow
+
+When the engagement provides the dedicated `pent6d-gmail-test` mailbox and a
+forwarding domain such as `t6d.io.vn`, use it freely for authorized test
+identities. Allocate a unique recipient alias per run and role (for example,
+`pent6d-user-<run-id>@t6d.io.vn`), then:
+
+1. Register the test identity with that alias; never use a real user's address.
+2. Call `mailbox_search` with the exact alias and a `since` timestamp captured
+   immediately before the action. Narrow by sender/subject when known.
+3. Call `mailbox_read` only for the matching message UID and extract the
+   verification link, OTP, recovery token, or invitation required for the
+   current flow.
+4. Use the value once, keep it out of shared memory and reports, and redact it
+   from evidence. Do not read unrelated messages merely because the mailbox is
+   a test account.
+
+The mailbox tools are read-only: they cannot send, delete, move, or alter
+messages. A missing or expired message is a validation barrier, not permission
+to guess an OTP or reuse a token from another alias.
+
+For an explicitly authorized phone-verification flow, load `hupsms` and use
+`hupsms_balance`, `hupsms_services`, and one `hupsms_rent` call to obtain a
+dedicated test number. Poll the same order with `hupsms_check`, use the OTP
+once, and cancel a still-pending order when it is no longer needed. Keep the
+provider key, number, OTP, and raw SMS out of shared memory and reports. A
+successful rental only proves that the target accepts the delivery channel;
+the finding must demonstrate an account-boundary or verification-control
+failure.
+
 ## Proof Standard
 
 Demonstrate control of a dedicated test account or a harmless account-linking

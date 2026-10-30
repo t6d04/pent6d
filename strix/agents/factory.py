@@ -37,6 +37,7 @@ from strix.tools.chaining.tools import (
 from strix.tools.coverage.tools import list_coverage, record_coverage, update_coverage
 from strix.tools.finish.tool import finish_scan
 from strix.tools.load_skill.tool import load_skill
+from strix.tools.mailbox import mailbox_read, mailbox_search, mailbox_status
 from strix.tools.mcp import (
     call_mcp,
     describe_mcp,
@@ -44,6 +45,7 @@ from strix.tools.mcp import (
     list_mcps,
     search_mcp_tools,
 )
+from strix.tools.mfa_secrets import mfa_secret_status, mfa_secret_store, mfa_totp_code
 from strix.tools.notes.tools import (
     create_note,
     delete_note,
@@ -64,7 +66,9 @@ from strix.tools.proxy.tools import (
 from strix.tools.recon.tools import (
     finalize_recon,
     list_recon,
+    list_recon_coverage,
     record_recon,
+    record_recon_coverage,
     record_source_leak,
 )
 from strix.tools.reporting.tool import (
@@ -81,6 +85,14 @@ from strix.tools.shared_memory import (
     get_shared_memory,
     remember_shared_memory,
     search_shared_memory,
+)
+from strix.tools.temporary_phone import (
+    hupsms_balance,
+    hupsms_cancel,
+    hupsms_check,
+    hupsms_rent,
+    hupsms_rerent,
+    hupsms_services,
 )
 from strix.tools.thinking.tool import think
 from strix.tools.threat_model.tools import (
@@ -588,6 +600,18 @@ def _finish_tool_use_behavior(
 _BASE_TOOLS: tuple[Tool, ...] = (
     think,
     load_skill,
+    mailbox_status,
+    mailbox_search,
+    mailbox_read,
+    hupsms_balance,
+    hupsms_services,
+    hupsms_rent,
+    hupsms_check,
+    hupsms_cancel,
+    hupsms_rerent,
+    mfa_secret_store,
+    mfa_secret_status,
+    mfa_totp_code,
     create_todo,
     list_todos,
     update_todo,
@@ -608,8 +632,10 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     update_attack_task,
     record_coverage,
     record_recon,
+    record_recon_coverage,
     record_source_leak,
     list_recon,
+    list_recon_coverage,
     finalize_recon,
     update_coverage,
     list_coverage,
@@ -682,6 +708,7 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     list_reports,
     get_report,
     list_recon,
+    list_recon_coverage,
     finalize_recon,
     view_agent_graph,
     send_message_to_agent,

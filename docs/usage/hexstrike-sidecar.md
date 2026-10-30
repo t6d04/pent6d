@@ -7,7 +7,17 @@ with the scan engine.
 
 ## Installed layout
 
-The default Windows layout is:
+The default layout is a sibling checkout next to the Pent6d repository. On
+Ubuntu/Linux it should look like:
+
+```text
+~/Resources/hexstrike-ai/
+  hexstrike_server.py
+  hexstrike_mcp.py
+  .venv312/bin/python
+```
+
+On Windows the equivalent layout is:
 
 ```text
 D:\Resources\hexstrike-ai\
@@ -18,14 +28,14 @@ D:\Resources\hexstrike-ai\
 
 Pent6d checks the HexStrike health endpoint at startup. If no healthy process
 is found it starts the server on loopback, writes its log to
-`D:\Resources\hexstrike-ai\.pent6d\hexstrike-server.log`, and generates:
+`<hexstrike-home>/.pent6d/hexstrike-server.log`, and generates:
 
 ```text
-%USERPROFILE%\.strix\pent6d-hexstrike-mcp.json
+~/.strix/pent6d-hexstrike-mcp.json
 ```
 
 The generated MCP file is merged with the user's existing
-`%USERPROFILE%\.strix\mcp-servers.json` configuration. The initial allowlist is
+`~/.strix/mcp-servers.json` configuration. The initial allowlist is
 limited to recon and validation tools. Set `PENT6D_HEXSTRIKE_ALLOW_ALL=1` only
 for an explicitly authorized test environment.
 
@@ -42,6 +52,21 @@ for an explicitly authorized test environment.
 
 Only authorized targets should be supplied to HexStrike. The HexStrike API can
 execute external commands, so do not expose it to an untrusted network.
+
+## Quick start (Ubuntu/Linux)
+
+```bash
+export PENT6D_HEXSTRIKE_HOME="$HOME/Resources/hexstrike-ai"
+export PENT6D_HEXSTRIKE_PORT=8889
+uv run pent6d web
+```
+
+Pent6d also discovers `.venv/bin/python` when `.venv312/bin/python` is not
+present. Verify the sidecar independently:
+
+```bash
+curl -fsS http://127.0.0.1:8889/health
+```
 
 ## Quick start (PowerShell)
 
@@ -60,8 +85,8 @@ Invoke-RestMethod http://127.0.0.1:8889/health
 
 If port `8889` is already occupied and was not explicitly pinned, Pent6d
 selects and remembers a nearby port in
-`D:\Resources\hexstrike-ai\.pent6d\hexstrike-port`; the generated MCP config
-at `%USERPROFILE%\.strix\pent6d-hexstrike-mcp.json` is the authoritative endpoint.
+`<hexstrike-home>/.pent6d/hexstrike-port`; the generated MCP config at
+`~/.strix/pent6d-hexstrike-mcp.json` is the authoritative endpoint.
 
 ## How agents use HexStrike
 

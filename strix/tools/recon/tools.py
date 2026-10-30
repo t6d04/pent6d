@@ -38,6 +38,145 @@ _PROXY_ERROR_MARKERS = (
 )
 _HOST_RE = re.compile(r"(?i)([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z0-9.-]+)")
 
+_RECON_COVERAGE_CATEGORIES = (
+    "asset_discovery",
+    "dns_resolution",
+    "live_probe",
+    "service_discovery",
+    "web_surface",
+    "javascript_analysis",
+    "content_discovery",
+    "parameter_discovery",
+    "technology_fingerprint",
+    "authentication_surface",
+    "visual_capture",
+)
+class ReconCoverageRecord(BaseModel):
+    """Auditable status for one recon workstream."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    category: Literal[
+        "asset_discovery",
+        "dns_resolution",
+        "live_probe",
+        "service_discovery",
+        "web_surface",
+        "javascript_analysis",
+        "content_discovery",
+        "parameter_discovery",
+        "technology_fingerprint",
+        "authentication_surface",
+        "visual_capture",
+    ]
+    status: Literal["completed", "not_applicable", "blocked", "not_run"]
+    tools: list[str] = Field(default_factory=list, max_length=20)
+    evidence: str = Field(default="", max_length=4000)
+    reason: str = Field(default="", max_length=2000)
+
+
+def _coverage_path(run_dir: Path) -> Path:
+    return run_dir / "recon_coverage.json"
+
+
+def _read_coverage(run_dir: Path) -> list[dict[str, Any]]:
+    path = _coverage_path(run_dir)
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        raise TypeError("Invalid recon coverage artifact")
+    return [item for item in data["entries"] if isinstance(item, dict)]
+
+
+def _required_coverage(
+    *, scan_mode: str | None, target_types: list[str] | tuple[str, ...] | set[str] | None
+) -> list[str]:
+    """Return workstreams required before a live recon can be finalized."""
+
+    mode = (scan_mode or "").strip().lower()
+    target_set = {str(value).strip().lower() for value in (target_types or ()) if value}
+    if mode not in {"standard", "deep"}:
+        return []
+    if not target_set & {"web_application", "api_spec", "ip_address"}:
+        return []
+
+    required = {"asset_discovery", "live_probe", "technology_fingerprint"}
+    if "web_application" in target_set:
+        required.update(
+            {
+                "dns_resolution",
+                "service_discovery",
+                "web_surface",
+                "javascript_analysis",
+                "content_discovery",
+                "parameter_discovery",
+                "authentication_surface",
+                "visual_capture",
+            }
+        )
+    elif "api_spec" in target_set:
+        required.update(
+            {
+                "dns_resolution",
+                "service_discovery",
+                "web_surface",
+                "parameter_discovery",
+                "authentication_surface",
+            }
+        )
+    elif "ip_address" in target_set:
+        required.add("service_discovery")
+    return [category for category in _RECON_COVERAGE_CATEGORIES if category in required]
+
+
+def _coverage_gaps(
+    entries: list[dict[str, Any]], required: list[str]
+) -> tuple[list[str], list[str]]:
+    by_category = {str(entry.get("category")): entry for entry in entries}
+    missing: list[str] = []
+    blocked: list[str] = []
+    for category in required:
+        status = str(by_category.get(category, {}).get("status") or "")
+        if status in {"", "not_run"}:
+            missing.append(category)
+        elif status == "blocked":
+            blocked.append(category)
+    return missing, blocked
+
+
+def _save_coverage(
+    run_dir: Path,
+    records: list[dict[str, Any]],
+    agent_id: str | None,
+) -> dict[str, Any]:
+    with _LOCK:
+        existing = {entry["category"]: entry for entry in _read_coverage(run_dir)}
+        now = datetime.now(UTC).isoformat()
+        for record in records:
+            existing[record["category"]] = {
+                **existing.get(record["category"], {}),
+                **record,
+                "agent_id": agent_id,
+                "updated_at": now,
+            }
+        payload = {
+            "schema_version": 1,
+            "entries": [existing[key] for key in _RECON_COVERAGE_CATEGORIES if key in existing],
+            "updated_at": now,
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=run_dir, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False)
+        try:
+            temporary.replace(_coverage_path(run_dir))
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {"success": True, "saved": [record["category"] for record in records]}
+
 
 class ReconObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -54,6 +193,8 @@ class ReconObservation(BaseModel):
     value: str = Field(min_length=1, max_length=2048)
     source: str = Field(min_length=1, max_length=2000)
     scope: Literal["in_scope", "out_of_scope", "unknown"] = "unknown"
+    attribution: Literal["confirmed", "likely", "unknown", "out_of_scope"] = "unknown"
+    attribution_evidence: str = Field(default="", max_length=4000)
     alive: Literal["alive", "unreachable", "unknown"] = "unknown"
     status_code: int | None = Field(default=None, ge=100, le=599)
     title: str = Field(default="", max_length=1000)
@@ -124,6 +265,9 @@ def _normalize_alive(entry: dict[str, Any]) -> dict[str, Any]:
     """
 
     normalized = dict(entry)
+    normalized["attribution"] = str(normalized.get("attribution") or "unknown")
+    if normalized.get("scope") == "out_of_scope":
+        normalized["attribution"] = "out_of_scope"
     if _is_proxy_error(normalized):
         normalized["alive"] = "unknown"
         return normalized
@@ -190,10 +334,10 @@ def _normalize_inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if entry.get("scope") != "in_scope":
             continue
         host = _host_key(str(entry.get("value") or ""))
-        state = service_state.get(host)
-        if state:
-            entry["alive"] = state
-            if state == "alive" and entry.get("status_code") is None:
+        service_state_value = service_state.get(host)
+        if service_state_value:
+            entry["alive"] = service_state_value
+            if service_state_value == "alive" and entry.get("status_code") is None:
                 entry["status_code"] = service_status.get(host)
     return normalized
 
@@ -219,13 +363,36 @@ def _missing_live_host_screenshots(entries: list[dict[str, Any]]) -> list[str]:
 
 
 def read_recon(run_dir: Path) -> dict[str, Any]:
+    run_record: dict[str, Any] = {}
+    run_record_path = run_dir / "run.json"
+    if run_record_path.exists():
+        try:
+            loaded = json.loads(run_record_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                run_record = loaded
+        except (OSError, json.JSONDecodeError):
+            # Recon remains readable even if a partially-written run record is
+            # observed while the worker is updating its status.
+            run_record = {}
+    required_coverage = _required_coverage(
+        scan_mode=str(run_record.get("scan_mode") or ""),
+        target_types=run_record.get("scan_target_types"),
+    )
     path = run_dir / "recon.json"
     if not path.exists():
-        return {"schema_version": 1, "entries": [], "updated_at": None}
+        return {
+            "schema_version": 1,
+            "entries": [],
+            "coverage": _read_coverage(run_dir),
+            "required_coverage": required_coverage,
+            "updated_at": None,
+        }
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         raise TypeError("Invalid recon artifact")
     data["entries"] = _normalize_inventory(list(data["entries"]))
+    data["coverage"] = _read_coverage(run_dir)
+    data["required_coverage"] = required_coverage
     return data
 
 
@@ -287,12 +454,13 @@ def _snapshot_chunks(entries: list[dict[str, Any]]) -> list[str]:
     return chunks
 
 
-def _finalize_recon_sync(
+def _finalize_recon_sync(  # noqa: PLR0911
     run_dir: Path,
     state_dir: Path,
     *,
     agent_id: str | None,
     agent_name: str | None,
+    required_coverage: list[str] | None = None,
 ) -> dict[str, Any]:
     state_dir.mkdir(parents=True, exist_ok=True)
     complete_path = _recon_complete_path(run_dir)
@@ -311,6 +479,24 @@ def _finalize_recon_sync(
                 "No structured recon observations exist; mapper must record recon "
                 "before finalizing."
             ),
+        }
+    required = list(required_coverage or [])
+    missing_coverage, blocked_coverage = _coverage_gaps(
+        list(document.get("coverage") or []), required
+    )
+    if missing_coverage or blocked_coverage:
+        gaps = missing_coverage + blocked_coverage
+        return {
+            "success": False,
+            "error": (
+                "Recon coverage contract is incomplete. Record each required workstream "
+                "with record_recon_coverage; blocked workstreams must be resolved or "
+                "explicitly marked not_applicable before retrying."
+            ),
+            "required_coverage": required,
+            "missing_coverage": missing_coverage,
+            "blocked_coverage": blocked_coverage,
+            "coverage_gaps": gaps,
         }
     missing_screenshots = _missing_live_host_screenshots(entries)
     if missing_screenshots:
@@ -357,6 +543,8 @@ def _finalize_recon_sync(
         "schema_version": 1,
         "finalized_at": now,
         "entry_count": len(entries),
+        "required_coverage": required,
+        "coverage": document.get("coverage", []),
         "memory_ids": memory_ids,
         "agent_id": agent_id,
         "agent_name": agent_name,
@@ -377,6 +565,7 @@ def _finalize_recon_sync(
         "entry_count": len(entries),
         "memory_chunks": len(memory_ids),
         "memory_ids": memory_ids,
+        "coverage": document.get("coverage", []),
         "marker": str(complete_path.name),
     }
 
@@ -420,7 +609,9 @@ async def record_recon(ctx: RunContextWrapper, observations_json: str) -> str:
     Source leaks must also include source_location, source_location_type
     (local_path or web_url), and source_download_status (downloaded or
     online_only). Optional:
-    scope (in_scope/out_of_scope/unknown), alive (alive/unreachable/unknown),
+    scope (in_scope/out_of_scope/unknown), attribution
+    (confirmed/likely/unknown/out_of_scope), attribution_evidence,
+    alive (alive/unreachable/unknown),
     status_code, title, ip_addresses, technologies, method, evidence,
     confidence (observed/inferred/unverified), finding_id, screenshot_path.
     screenshot_path is a PNG/JPEG already captured in /workspace; it is copied
@@ -463,6 +654,103 @@ async def record_recon(ctx: RunContextWrapper, observations_json: str) -> str:
         result["warnings"] = warnings
         return json.dumps(result)
     except (ValueError, KeyError, TypeError, OSError) as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+@function_tool
+async def record_recon_coverage(  # noqa: PLR0911
+    ctx: RunContextWrapper, coverage_json: str
+) -> str:
+    """Record completion or an explicit exception for each recon workstream.
+
+    coverage_json is a JSON array of objects with ``category`` and ``status``.
+    A completed category must include a concise evidence summary (and should
+    name the tools used).  A not-applicable or
+    blocked category must explain why, so the root can distinguish a deliberate
+    scope decision from an accidentally skipped phase.
+    """
+    try:
+        raw = json.loads(coverage_json)
+        if not isinstance(raw, list) or not 1 <= len(raw) <= len(_RECON_COVERAGE_CATEGORIES):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Provide 1-{len(_RECON_COVERAGE_CATEGORIES)} coverage records",
+                }
+            )
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw:
+            record = ReconCoverageRecord.model_validate(item)
+            if record.category in seen:
+                return json.dumps(
+                    {"success": False, "error": "Each category may appear once per batch"}
+                )
+            seen.add(record.category)
+            if record.status == "completed" and not record.evidence:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Completed category {record.category!r} requires an evidence summary"
+                        ),
+                    }
+                )
+            if record.status != "completed" and not record.reason:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Category {record.category!r} requires a reason for {record.status}"
+                        ),
+                    }
+                )
+            records.append(record.model_dump())
+        inner = ctx.context if isinstance(ctx.context, dict) else {}
+        coordinator = inner.get("coordinator")
+        agent_id = inner.get("agent_id") if isinstance(inner.get("agent_id"), str) else None
+        if inner.get("parent_id") is not None and coordinator is not None and agent_id:
+            metadata = getattr(coordinator, "metadata", {}).get(agent_id, {})
+            role = metadata.get("role") if isinstance(metadata, dict) else None
+            if role not in {"recon", "source_mapper"}:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Only recon/source_mapper agents may record recon coverage",
+                    }
+                )
+        result = await asyncio.to_thread(
+            _save_coverage, Path(inner["state_dir"]).parent, records, agent_id
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+@function_tool
+async def list_recon_coverage(ctx: RunContextWrapper) -> str:
+    """Return the recon coverage contract and currently unresolved workstreams."""
+    try:
+        inner = ctx.context if isinstance(ctx.context, dict) else {}
+        run_dir = Path(inner["state_dir"]).parent
+        entries = await asyncio.to_thread(_read_coverage, run_dir)
+        required = _required_coverage(
+            scan_mode=str(inner.get("scan_mode") or ""),
+            target_types=inner.get("scan_target_types"),
+        )
+        missing, blocked = _coverage_gaps(entries, required)
+        return json.dumps(
+            {
+                "categories": list(_RECON_COVERAGE_CATEGORIES),
+                "required": required,
+                "entries": entries,
+                "missing": missing,
+                "blocked": blocked,
+                "complete": not missing and not blocked,
+            },
+            ensure_ascii=False,
+        )
+    except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
         return json.dumps({"success": False, "error": str(exc)})
 
 
@@ -530,7 +818,8 @@ async def finalize_recon(ctx: RunContextWrapper) -> str:
 
     Root-only lifecycle step. Specialists must not be spawned until this tool
     succeeds. The operation is idempotent for a run and writes a durable marker
-    so the ordering survives process recovery.
+    so the ordering survives process recovery. Standard/deep live scans also
+    require the mapper's recon coverage contract to be complete.
     """
     try:
         inner = ctx.context
@@ -567,6 +856,10 @@ async def finalize_recon(ctx: RunContextWrapper) -> str:
             state_dir,
             agent_id=agent_id,
             agent_name=agent_name if isinstance(agent_name, str) else None,
+            required_coverage=_required_coverage(
+                scan_mode=str(inner.get("scan_mode") or ""),
+                target_types=inner.get("scan_target_types"),
+            ),
         )
         if result.get("success"):
             inner["recon_finalized"] = True

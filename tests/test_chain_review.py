@@ -71,6 +71,31 @@ def test_informational_observation_is_a_chain_gate_obligation(report_state: Repo
     assert result["ready"] is True
 
 
+def test_finish_rejects_unresolved_follow_up(report_state: ReportState) -> None:
+    assert report_state is not None
+    _record_impl(
+        surface="POST /upload",
+        risk_area="file upload validation",
+        outcome="needs_follow_up",
+        evidence="Upload behavior could not be validated without a permitted test file.",
+        agent_id=None,
+        agent_name=None,
+    )
+
+    result = _do_finish(
+        parent_id=None,
+        executive_summary="summary",
+        methodology="method",
+        technical_analysis="analysis",
+        recommendations="recommendations",
+        agent_graph={},
+    )
+
+    assert result["success"] is False
+    assert "needs_follow_up" in result["error"]
+    assert result["coverage"]["unresolved_surfaces"][0]["surface"] == "POST /upload"
+
+
 def test_report_revision_invalidates_prior_chain_review(report_state: ReportState) -> None:
     report_id = report_state.add_vulnerability_report(title="Test finding", severity="low")
     _record_chain_review_impl(
