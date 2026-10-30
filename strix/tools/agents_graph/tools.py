@@ -20,11 +20,20 @@ from strix.core.hooks import LLM_TURN_KEY
 from strix.report.state import get_global_report_state
 from strix.skills import validate_requested_skills
 from strix.tools.checklist.tools import validate_checklist_codes
+from strix.tools.coverage.tools import get_coverage_entries
 
 
 _ACTIVE_STATUSES: frozenset[str] = frozenset({"running", "waiting"})
 _AGENT_ROLES: frozenset[str] = frozenset(
-    {"recon", "source_mapper", "specialist", "validator", "gap_closer", "chain_reviewer"}
+    {
+        "recon",
+        "source_mapper",
+        "specialist",
+        "validator",
+        "reflection",
+        "gap_closer",
+        "chain_reviewer",
+    }
 )
 
 
@@ -583,7 +592,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
     **Dispatch metadata (required for new scans):**
 
     - ``role``: ``recon``, ``source_mapper``, ``specialist``, ``validator``,
-      ``gap_closer``, or ``chain_reviewer``.  If omitted, Strix infers a
+      ``reflection``, ``gap_closer``, or ``chain_reviewer``.  If omitted, Strix infers a
       conservative role from the name and skills for backwards compatibility.
     - ``component`` and ``risk_area`` identify the bounded responsibility.
     - ``phase`` is ``discovery``, ``testing``, ``validation``, or
@@ -908,7 +917,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
 
 
 @function_tool(timeout=120)
-async def dispatch_ready_tasks(
+async def dispatch_ready_tasks(  # noqa: PLR0911, PLR0912
     ctx: RunContextWrapper,
     max_tasks: int = 4,
 ) -> str:
@@ -936,14 +945,6 @@ async def dispatch_ready_tasks(
         return json.dumps({"success": False, "error": "child-agent spawner unavailable"})
 
     limit = max(1, min(int(max_tasks), 8))
-    ready = await graph.ready_tasks()
-    candidates = [
-        task
-        for task in ready
-        if task.get("role") in {"validator", "chain_reviewer", "gap_closer"}
-        and isinstance(task.get("metadata"), dict)
-        and task["metadata"].get("node_type") in {"validator", "chain_reviewer", "follow_up"}
-    ]
     active = sum(
         1
         for child_id, status in coordinator.statuses.items()
@@ -951,7 +952,33 @@ async def dispatch_ready_tasks(
         and status in {"running", "waiting", "budget_paused"}
     )
     capacity = max(0, int(inner.get("max_concurrent_children") or 4) - active)
-    selected = candidates[: min(limit, capacity)]
+    if capacity == 0:
+        return json.dumps(
+            {
+                "success": True,
+                "dispatched": [],
+                "skipped": 0,
+                "active_children": active,
+                "note": "Child-agent concurrency capacity is full; tasks remain ready.",
+            },
+            ensure_ascii=False,
+        )
+    ready = await graph.claim_ready_tasks(
+        limit=min(limit, capacity),
+        roles={"validator", "reflection", "chain_reviewer", "gap_closer"},
+    )
+    candidates = [
+        task
+        for task in ready
+        if isinstance(task.get("metadata"), dict)
+        and task["metadata"].get("node_type")
+        in {"validator", "reflection", "chain_reviewer", "follow_up"}
+    ]
+    candidate_ids = {str(task.get("task_id")) for task in candidates}
+    for claimed_task in ready:
+        if str(claimed_task.get("task_id")) not in candidate_ids:
+            await graph.set_status(str(claimed_task.get("task_id")), "ready")
+    selected = candidates
     if not selected:
         return json.dumps(
             {
@@ -972,18 +999,25 @@ async def dispatch_ready_tasks(
         metadata = dict(task.get("metadata") or {})
         skills = [str(item) for item in metadata.get("skills", []) if str(item).strip()]
         if not task_id or not skills:
+            await graph.schedule_retry(task_id, "follow-up has no inherited skills")
             failures.append({"task_id": task_id, "error": "follow-up has no inherited skills"})
             continue
-        await graph.set_status(task_id, "running", increment_attempt=True)
         try:
+            task_instructions = (
+                f"{task.get('title', 'Follow-up task')}\n"
+                "Use the inherited evidence and shared memory. Validate the source task, "
+                "update the attack graph/hypotheses when needed, record coverage and "
+                "checklist outcomes, and close with agent_finish."
+            )
+            if str(task.get("role") or "") == "validator":
+                task_instructions += (
+                    f" The durable validator task ID is {task_id}; call record_validation "
+                    "with this exact task ID before agent_finish."
+                )
             result = await spawner(
                 parent_ctx=inner,
                 name=str(task.get("title") or task.get("role") or "Follow-up"),
-                task=(
-                    f"{task.get('title', 'Follow-up task')}\n"
-                    "Use the inherited evidence and shared memory; validate the source task, "
-                    "record coverage/checklist outcomes, and close with agent_finish."
-                ),
+                task=task_instructions,
                 skills=skills,
                 parent_history=parent_history,
                 source_review=bool(metadata.get("source_review")),
@@ -997,13 +1031,13 @@ async def dispatch_ready_tasks(
                 dispatch_key=str(task.get("dispatch_key") or task_id),
             )
             if not result.get("success") or not result.get("agent_id"):
-                await graph.set_status(task_id, "failed")
+                await graph.schedule_retry(task_id, str(result.get("error", "spawn failed")))
                 failures.append({"task_id": task_id, "error": result.get("error", "spawn failed")})
                 continue
             await graph.bind_agent(task_id, str(result["agent_id"]))
             dispatched.append({"task": task, "agent": result})
         except (RuntimeError, TypeError, ValueError) as exc:
-            await graph.set_status(task_id, "failed")
+            await graph.schedule_retry(task_id, str(exc))
             failures.append({"task_id": task_id, "error": str(exc)})
 
     return json.dumps(
@@ -1108,6 +1142,19 @@ async def agent_finish(
 
     filed_reports = _filed_reports_by(me)
     filed_report_ids = [str(r.get("id")) for r in filed_reports]
+    coverage_ids = [
+        str(entry.get("entry_id"))
+        for entry in get_coverage_entries()
+        if entry.get("entry_id")
+        and entry.get("agent_id") == me
+        and str(entry.get("outcome")) in {"reported", "informational"}
+    ]
+    report_state = get_global_report_state()
+    thinking_ids = [
+        str(item.get("id"))
+        for item in (report_state.thinking_hypotheses if report_state is not None else [])
+        if isinstance(item, dict) and item.get("id") and item.get("agent_id") == me
+    ]
 
     scheduled_tasks: list[dict[str, Any]] = []
     attack_graph = inner.get("attack_graph")
@@ -1123,6 +1170,8 @@ async def agent_finish(
                 open_items=list(open_items or []),
                 evidence_ids=list(metadata.get("evidence_ids") or []),
                 checklist_codes=list(metadata.get("checklist_codes") or []),
+                coverage_ids=coverage_ids,
+                thinking_ids=thinking_ids,
             )
             scheduled_tasks = list(follow_up.get("scheduled_tasks") or [])
 

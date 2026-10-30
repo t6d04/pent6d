@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
+from agents.tool_context import ToolContext
 
 from strix.report.state import ReportState, set_global_report_state
+from strix.runtime.attack_graph import AttackGraph, TaskStatus
 from strix.tools.chaining.tools import (
     _record_chain_review_impl,
     _record_thinking_impl,
     chain_review_status,
 )
 from strix.tools.coverage.tools import _record_impl, hydrate_coverage_from_disk
-from strix.tools.finish.tool import _do_finish, _mapper_completion_gate, _specialist_completion_gate
+from strix.tools.finish.tool import (
+    _do_finish,
+    _mapper_completion_gate,
+    _specialist_completion_gate,
+    finish_scan,
+)
 
 
 if TYPE_CHECKING:
@@ -136,6 +144,76 @@ def test_thinking_is_not_a_confirmed_finding(report_state: ReportState) -> None:
     assert report_state.vulnerability_reports == []
     assert report_state.run_record["thinking_hypotheses"][0]["label"] == "Thinking"
     assert (report_state.get_run_dir() / "thinking.json").exists()
+
+
+def test_thinking_hypothesis_is_a_chain_gate_obligation(report_state: ReportState) -> None:
+    result = _record_thinking_impl(
+        title="Possible parser confusion",
+        hypothesis="A second decoding pass may bypass the input filter.",
+        evidence="The response changes after encoded input is replayed.",
+        why_unconfirmed="A safe proof payload was not available during the run.",
+        suggested_validation="Replay a harmless marker through both decoding paths.",
+        related_report_ids=[],
+        agent_id=None,
+        agent_name=None,
+    )
+    thinking_id = result["id"]
+
+    blocked = chain_review_status(report_state)
+    assert blocked["ready"] is False
+    assert blocked["missing_thinking_ids"] == [thinking_id]
+
+    reviewed = _record_chain_review_impl(
+        reviewed_report_ids=[],
+        reviewed_coverage_entry_ids=[],
+        reviewed_thinking_ids=[thinking_id],
+        outcome="blocked",
+        analysis="The hypothesis remains unproven because the safe replay fixture is unavailable.",
+        upgraded_report_ids=[],
+        agent_id=None,
+        agent_name=None,
+    )
+    assert reviewed["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_finish_scan_blocks_until_graph_validator_is_recorded(
+    report_state: ReportState, tmp_path: Path
+) -> None:
+    del report_state
+    graph = AttackGraph(tmp_path / "state")
+    created = await graph.add_task(
+        title="Validate finding",
+        role="validator",
+        phase="validation",
+    )
+    task_id = created["task"]["task_id"]
+    await graph.set_status(task_id, TaskStatus.SUCCEEDED)
+    context = ToolContext(
+        context={
+            "parent_id": None,
+            "validation_enabled": True,
+            "attack_graph": graph,
+        },
+        tool_name=finish_scan.name,
+        tool_call_id="finish-call",
+        tool_arguments="{}",
+    )
+    args = {
+        "executive_summary": "# Summary\nAssessment complete.",
+        "methodology": "# Methodology\nEvidence-based testing.",
+        "technical_analysis": "# Analysis\nNo additional detail.",
+        "recommendations": "# Recommendations\nRetest after remediation.",
+    }
+
+    raw: str = await finish_scan.on_invoke_tool(context, json.dumps(args))
+    blocked = json.loads(raw)
+    assert blocked["success"] is False
+    assert blocked["attack_graph"]["missing_validation"]
+
+    await graph.bind_validation(task_id, "validation-1")
+    raw = await finish_scan.on_invoke_tool(context, json.dumps(args))
+    assert json.loads(raw)["success"] is True
 
 
 def test_standard_deep_completion_requires_completed_specialist() -> None:

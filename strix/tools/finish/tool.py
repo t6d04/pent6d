@@ -321,8 +321,9 @@ def _do_finish(  # noqa: PLR0911
             return {
                 "success": False,
                 "error": (
-                    "Chain/impact review is incomplete. Review every confirmed finding "
-                    "and informational observation with record_chain_review before "
+                    "Chain/impact review is incomplete. Review every confirmed finding, "
+                    "informational observation, and Thinking hypothesis with "
+                    "record_chain_review before "
                     "calling finish_scan."
                 ),
                 "chain_review": chain_status,
@@ -419,7 +420,7 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
 
 
 @function_tool(timeout=60)
-async def finish_scan(  # noqa: PLR0911
+async def finish_scan(  # noqa: PLR0911, PLR0912
     ctx: RunContextWrapper,
     executive_summary: str,
     methodology: str,
@@ -501,6 +502,9 @@ async def finish_scan(  # noqa: PLR0911
        ``blocked``, and ``needs_validation`` are interim states and block
        completion. Use ``checklist_progress`` and ``checklist_list`` to
        reconcile the shared checklist before this call.
+    9. **Attack-graph validator gate.** Every generated validator and
+       chain-review task must be terminal, and every successful validator must
+       have a durable ``record_validation`` record before this call.
 
     **Calling this multiple times overwrites the previous report.**
     Make the single call comprehensive.
@@ -703,6 +707,26 @@ async def finish_scan(  # noqa: PLR0911
             ensure_ascii=False,
             default=str,
         )
+
+    if inner.get("validation_enabled") and inner.get("attack_graph"):
+        graph = inner["attack_graph"]
+        if hasattr(graph, "completion_gate"):
+            graph_gate = await graph.completion_gate()
+            if not graph_gate.get("success"):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "scan_completed": False,
+                        "error": (
+                            "Attack-graph validation is incomplete. Resolve all ready, "
+                            "running, blocked, retrying, failed, and unvalidated "
+                            "validator/chain tasks before finishing."
+                        ),
+                        "attack_graph": graph_gate,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
 
     if inner.get("checklist_enabled") and inner.get("state_dir"):
         checklist = checklist_status_for_state_dir(Path(inner["state_dir"]))

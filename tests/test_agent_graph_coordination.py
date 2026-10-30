@@ -281,6 +281,7 @@ async def test_root_dispatches_ready_followup_from_attack_graph(tmp_path: Path) 
     assert validator["status"] == "running"
     assert validator["metadata"]["agent_id"] == "validator-child"
     assert origin["task"]["task_id"] in validator["dependencies"]
+    assert validator["task_id"] in captured["task"]
 
 
 # --- send_message_to_agent -------------------------------------------------------

@@ -278,7 +278,10 @@ async def run_strix_scan(
         # An explicit unsupported native selection is a configuration error.
         # For legacy auto mode, the old provider resolver already gives a
         # non-fatal tool result when no optional search provider is configured.
-        if settings.integrations.web_search_provider == "native":
+        configured_provider = getattr(
+            getattr(settings, "integrations", None), "web_search_provider", "auto"
+        )
+        if configured_provider == "native":
             raise RuntimeError(str(web_search_backend["error"]))
         native_web_search = False
     else:
@@ -300,12 +303,14 @@ async def run_strix_scan(
     from strix.tools.notes.tools import hydrate_notes_from_disk
     from strix.tools.threat_model.tools import hydrate_threat_models_from_disk
     from strix.tools.todo.tools import hydrate_todos_from_disk
+    from strix.tools.validation.tools import hydrate_validations_from_disk
 
     hydrate_todos_from_disk(state_dir)
     hydrate_notes_from_disk(state_dir)
     hydrate_coverage_from_disk(state_dir)
     hydrate_checklist_from_disk(state_dir)
     hydrate_threat_models_from_disk(state_dir)
+    hydrate_validations_from_disk(state_dir)
 
     root_id: str | None = None
     if is_resume:
@@ -426,7 +431,7 @@ async def run_strix_scan(
             request_timeout=settings.llm.timeout,
             prompt_cache=settings.llm.prompt_cache,
             extra_headers=settings.llm.extra_headers,
-            max_retries=settings.llm.max_retries,
+                max_retries=int(getattr(settings.llm, "max_retries", 2)),
         )
         run_config = RunConfig(
             model=resolved_model,
@@ -605,6 +610,7 @@ async def run_strix_scan(
             # this explicit lets legacy/resume callers opt out without
             # changing the persisted run format.
             "checklist_enabled": bool(scan_config.get("checklist_enabled", True)),
+            "validation_enabled": bool(scan_config.get("validation_enabled", True)),
             # Bounded fan-out keeps the shared target request budget and the
             # DeepSeek context budget predictable.  The create_agent tool
             # enforces this limit for direct and nested children.

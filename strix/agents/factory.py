@@ -118,6 +118,7 @@ from strix.tools.todo.tools import (
     mark_todo_pending,
     update_todo,
 )
+from strix.tools.validation.tools import list_validations, record_validation
 from strix.tools.web_search.tool import web_get_contents, web_search
 
 
@@ -640,6 +641,8 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     checklist_bulk_na,
     checklist_integrity,
     checklist_export,
+    record_validation,
+    list_validations,
     remember_shared_memory,
     search_shared_memory,
     get_shared_memory,
@@ -712,6 +715,8 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     checklist_bulk_na,
     checklist_integrity,
     checklist_export,
+    record_validation,
+    list_validations,
     remember_shared_memory,
     search_shared_memory,
     get_shared_memory,

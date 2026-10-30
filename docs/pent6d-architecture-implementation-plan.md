@@ -483,7 +483,9 @@ Nếu phải triển khai từng phần, thứ tự nên là:
   `agent_finish`, follow-up ready được tự dispatch ngay, còn tool thủ công vẫn
   là đường retry/resume khi spawn bị giới hạn hoặc lỗi.
 
-Các phần tiếp theo chưa bật mặc định gồm scheduler đọc attack graph, independent
-validator orchestration, reflection loop và UI graph view. Chúng sẽ được triển
-khai sau khi các state contract hiện tại được giữ ổn định qua thêm một vòng
-integration test.
+Các state contract P0/P1 hiện đã được bật: scheduler đọc attack graph có claim
+nguyên tử và retry/backoff, validator độc lập ghi verdict bền vững, finish gate
+kiểm tra nghĩa vụ graph, chain review bắt buộc xử lý cả Coverage và Thinking,
+và reflection task được tạo sau validator. UI graph tiếp tục đọc cùng attack
+graph này để hiển thị trạng thái và dependency; các cải tiến giao diện chỉ là
+phần trình bày, không thay đổi contract điều phối.
