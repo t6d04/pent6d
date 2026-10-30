@@ -17,9 +17,11 @@ from agents.tool_context import ToolContext
 
 from strix.core.agents import AgentCoordinator
 from strix.report.state import ReportState, set_global_report_state
+from strix.runtime.attack_graph import AttackGraph
 from strix.tools.agents_graph.tools import (
     agent_finish,
     create_agent,
+    dispatch_ready_tasks,
     send_message_to_agent,
     wait_for_agents,
 )
@@ -229,6 +231,56 @@ async def test_checklist_enabled_dispatch_requires_owned_checklist_codes() -> No
         **context,
     )
     assert complete["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_root_dispatches_ready_followup_from_attack_graph(tmp_path: Path) -> None:
+    coordinator = await _graph(interactive=False)
+    graph = AttackGraph(tmp_path)
+    origin = await graph.add_task(
+        title="Test authorization",
+        role="specialist",
+        phase="execution",
+        dispatch_key="api|idor|testing",
+        metadata={
+            "agent_id": "child",
+            "node_type": "specialist",
+            "skills": ["vulnerabilities/idor"],
+            "checklist_codes": ["P6-VULNERABILITY-IDOR"],
+            "component": "api",
+            "risk_area": "idor",
+        },
+    )
+    await graph.complete_and_schedule_followups(
+        agent_id="child",
+        role="specialist",
+        success=True,
+        report_ids=["finding-1"],
+    )
+    captured: dict[str, Any] = {}
+
+    async def _spawn(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"success": True, "agent_id": "validator-child"}
+
+    result = await _call(
+        dispatch_ready_tasks,
+        coordinator,
+        "root",
+        {"max_tasks": 1},
+        attack_graph=graph,
+        spawn_child_agent=_spawn,
+        max_concurrent_children=4,
+    )
+    assert result["success"] is True
+    assert len(result["dispatched"]) == 1
+    assert captured["role"] == "validator"
+    assert captured["checklist_codes"] == ["P6-VULNERABILITY-IDOR"]
+    snapshot = await graph.snapshot()
+    validator = next(task for task in snapshot["tasks"].values() if task["role"] == "validator")
+    assert validator["status"] == "running"
+    assert validator["metadata"]["agent_id"] == "validator-child"
+    assert origin["task"]["task_id"] in validator["dependencies"]
 
 
 # --- send_message_to_agent -------------------------------------------------------

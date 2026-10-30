@@ -474,6 +474,11 @@ Nếu phải triển khai từng phần, thứ tự nên là:
 - [x] `finish_scan` chặn kết thúc khi checklist còn mở; specialist dispatch
   trên run checklist-enabled phải khai báo `checklist_codes` để planner giao
   ownership rõ ràng.
+- [x] Khi specialist gọi `agent_finish`, task tương ứng được đóng trong
+  attack graph và tự sinh task `validator` rồi `chain_reviewer` theo
+  dependency; các task này idempotent theo `dispatch_key`.
+- [x] Root có `dispatch_ready_tasks` để chạy các follow-up đã ready, giữ giới
+  hạn concurrency và bind agent runtime vào graph task.
 
 Các phần tiếp theo chưa bật mặc định gồm scheduler đọc attack graph, independent
 validator orchestration, reflection loop và UI graph view. Chúng sẽ được triển

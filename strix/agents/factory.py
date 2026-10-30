@@ -22,6 +22,7 @@ from strix.config import load_settings
 from strix.tools.agents_graph.tools import (
     agent_finish,
     create_agent,
+    dispatch_ready_tasks,
     send_message_to_agent,
     stop_agent,
     view_agent_graph,
@@ -718,6 +719,7 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     create_attack_task,
     list_attack_tasks,
     update_attack_task,
+    dispatch_ready_tasks,
     record_coverage,
     update_coverage,
     list_coverage,
