@@ -445,6 +445,7 @@ async def spawn_child_agent(
     risk_area: str = "",
     phase: str = "",
     evidence_ids: list[str] | None = None,
+    checklist_codes: list[str] | None = None,
     stop_conditions: list[str] | None = None,
     dispatch_key: str = "",
     event_sink: StreamEventSink | None = None,
@@ -471,6 +472,7 @@ async def spawn_child_agent(
         risk_area=risk_area,
         phase=phase,
         evidence_ids=evidence_ids,
+        checklist_codes=checklist_codes,
         stop_conditions=stop_conditions,
         dispatch_key=dispatch_key,
     )

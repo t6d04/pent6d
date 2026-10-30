@@ -13,6 +13,7 @@ from typing import Any
 from agents import RunContextWrapper, function_tool
 
 from strix.core.agents import coordinator_from_context
+from strix.tools.checklist.tools import checklist_status_for_state_dir
 from strix.tools.recon.tools import _host_key, read_recon
 
 
@@ -418,7 +419,7 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
 
 
 @function_tool(timeout=60)
-async def finish_scan(
+async def finish_scan(  # noqa: PLR0911
     ctx: RunContextWrapper,
     executive_summary: str,
     methodology: str,
@@ -494,6 +495,12 @@ async def finish_scan(
         every in-scope hostname whose service is alive. A single broad child
         does not satisfy this gate unless its task explicitly names every
         required hostname and the child completes.
+    8. **Methodology checklist gate.** Every skill-derived methodology class
+       must be closed as ``pass``, ``fail``, or ``not_applicable``. ``pass``
+       and ``fail`` require a concrete surface and evidence; ``partial``,
+       ``blocked``, and ``needs_validation`` are interim states and block
+       completion. Use ``checklist_progress`` and ``checklist_list`` to
+       reconcile the shared checklist before this call.
 
     **Calling this multiple times overwrites the previous report.**
     Make the single call comprehensive.
@@ -696,6 +703,25 @@ async def finish_scan(
             ensure_ascii=False,
             default=str,
         )
+
+    if inner.get("checklist_enabled") and inner.get("state_dir"):
+        checklist = checklist_status_for_state_dir(Path(inner["state_dir"]))
+        if not checklist.get("complete"):
+            return json.dumps(
+                {
+                    "success": False,
+                    "scan_completed": False,
+                    "error": (
+                        "Methodology checklist is incomplete. Close every item as "
+                        "pass, fail, or not_applicable; use partial/blocked/"
+                        "needs_validation only while work remains. Every pass/fail "
+                        "must include evidence."
+                    ),
+                    "checklist": checklist,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
 
     result = await asyncio.to_thread(
         _do_finish,

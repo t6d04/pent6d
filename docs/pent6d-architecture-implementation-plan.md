@@ -466,6 +466,14 @@ Nếu phải triển khai từng phần, thứ tự nên là:
   type, status, risk, attempts, source nodes, evidence IDs và generated-by.
 - [x] Regression tests cho supervisor, attack graph, shared memory, recon và
   agent coordination đã pass.
+- [x] Checklist phương pháp theo run được tạo từ các vulnerability/protocol
+  skill pack, lưu tại `state/checklist.json` và mirror ở artifact root.
+- [x] Checklist có evidence gate cho `pass`/`fail`, trạng thái trung gian
+  `partial`/`blocked`/`needs_validation`, kiểm tra integrity và export JSON/
+  Markdown.
+- [x] `finish_scan` chặn kết thúc khi checklist còn mở; specialist dispatch
+  trên run checklist-enabled phải khai báo `checklist_codes` để planner giao
+  ownership rõ ràng.
 
 Các phần tiếp theo chưa bật mặc định gồm scheduler đọc attack graph, independent
 validator orchestration, reflection loop và UI graph view. Chúng sẽ được triển

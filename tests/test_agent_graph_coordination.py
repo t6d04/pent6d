@@ -23,6 +23,7 @@ from strix.tools.agents_graph.tools import (
     send_message_to_agent,
     wait_for_agents,
 )
+from strix.tools.checklist.tools import known_checklist_codes
 
 
 if TYPE_CHECKING:
@@ -185,6 +186,49 @@ async def test_live_specialist_is_blocked_until_recon_snapshot_is_finalized() ->
 
     assert result["success"] is False
     assert "Recon is not finalized" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_checklist_enabled_dispatch_requires_owned_checklist_codes() -> None:
+    coordinator = await _graph(interactive=False)
+    await coordinator.register("mapper", "Recon Mapper", parent_id="root", role="recon")
+
+    async def _spawn(**_kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "agent_id": "specialist-child"}
+
+    base_args = {
+        "name": "IDOR Specialist",
+        "task": "Test the tenant API object boundary",
+        "skills": ["vulnerabilities/idor"],
+        "role": "specialist",
+        "component": "tenant-api",
+        "risk_area": "idor",
+        "phase": "testing",
+        "evidence_ids": ["recon-1"],
+        "stop_conditions": ["all tenant object references are tested"],
+        "dispatch_key": "tenant-api|idor|testing",
+    }
+    context = {
+        "spawn_child_agent": _spawn,
+        "scan_mode": "standard",
+        "scan_target_types": ["web_application"],
+        "max_concurrent_children": 4,
+        "recon_finalized": True,
+        "checklist_enabled": True,
+    }
+    missing = await _call(create_agent, coordinator, "root", base_args, **context)
+    assert missing["success"] is False
+    assert "checklist_codes" in missing["error"]
+
+    code = next(iter(known_checklist_codes()))
+    complete = await _call(
+        create_agent,
+        coordinator,
+        "root",
+        {**base_args, "checklist_codes": [code], "dispatch_key": "tenant-api|idor|testing-2"},
+        **context,
+    )
+    assert complete["success"] is True
 
 
 # --- send_message_to_agent -------------------------------------------------------

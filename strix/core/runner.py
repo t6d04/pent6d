@@ -293,6 +293,7 @@ async def run_strix_scan(
         coordinator = AgentCoordinator()
     coordinator.set_snapshot_path(agents_path)
 
+    from strix.tools.checklist.tools import hydrate_checklist_from_disk
     from strix.tools.coverage.tools import hydrate_coverage_from_disk
     from strix.tools.notes.tools import hydrate_notes_from_disk
     from strix.tools.threat_model.tools import hydrate_threat_models_from_disk
@@ -301,6 +302,7 @@ async def run_strix_scan(
     hydrate_todos_from_disk(state_dir)
     hydrate_notes_from_disk(state_dir)
     hydrate_coverage_from_disk(state_dir)
+    hydrate_checklist_from_disk(state_dir)
     hydrate_threat_models_from_disk(state_dir)
 
     root_id: str | None = None
@@ -597,6 +599,10 @@ async def run_strix_scan(
             # snapshots recon into shared memory.  Children inherit it, while
             # a resumed process rehydrates it from disk.
             "recon_finalized": (state_dir.parent / "recon_complete.json").is_file(),
+            # New runs use the evidence-aware methodology checklist.  Keeping
+            # this explicit lets legacy/resume callers opt out without
+            # changing the persisted run format.
+            "checklist_enabled": bool(scan_config.get("checklist_enabled", True)),
             # Bounded fan-out keeps the shared target request budget and the
             # DeepSeek context budget predictable.  The create_agent tool
             # enforces this limit for direct and nested children.

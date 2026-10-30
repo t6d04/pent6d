@@ -167,6 +167,7 @@ class AgentCoordinator:
         risk_area: str = "",
         phase: str = "",
         evidence_ids: list[str] | None = None,
+        checklist_codes: list[str] | None = None,
         stop_conditions: list[str] | None = None,
         dispatch_key: str = "",
     ) -> None:
@@ -191,6 +192,8 @@ class AgentCoordinator:
                 metadata["phase"] = phase
             if evidence_ids:
                 metadata["evidence_ids"] = list(evidence_ids)
+            if checklist_codes:
+                metadata["checklist_codes"] = list(checklist_codes)
             if stop_conditions:
                 metadata["stop_conditions"] = list(stop_conditions)
             if dispatch_key:

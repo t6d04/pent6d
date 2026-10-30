@@ -34,6 +34,15 @@ from strix.tools.chaining.tools import (
     record_chain_review,
     record_thinking,
 )
+from strix.tools.checklist.tools import (
+    checklist_bulk_na,
+    checklist_export,
+    checklist_get,
+    checklist_integrity,
+    checklist_list,
+    checklist_progress,
+    checklist_update,
+)
 from strix.tools.coverage.tools import list_coverage, record_coverage, update_coverage
 from strix.tools.finish.tool import finish_scan
 from strix.tools.load_skill.tool import load_skill
@@ -623,6 +632,13 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     get_note,
     update_note,
     delete_note,
+    checklist_progress,
+    checklist_list,
+    checklist_get,
+    checklist_update,
+    checklist_bulk_na,
+    checklist_integrity,
+    checklist_export,
     remember_shared_memory,
     search_shared_memory,
     get_shared_memory,
@@ -688,6 +704,13 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     get_note,
     update_note,
     delete_note,
+    checklist_progress,
+    checklist_list,
+    checklist_get,
+    checklist_update,
+    checklist_bulk_na,
+    checklist_integrity,
+    checklist_export,
     remember_shared_memory,
     search_shared_memory,
     get_shared_memory,

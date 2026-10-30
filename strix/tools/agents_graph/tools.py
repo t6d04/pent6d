@@ -19,6 +19,7 @@ from strix.core.execution import notify_parent_on_terminal
 from strix.core.hooks import LLM_TURN_KEY
 from strix.report.state import get_global_report_state
 from strix.skills import validate_requested_skills
+from strix.tools.checklist.tools import validate_checklist_codes
 
 
 _ACTIVE_STATUSES: frozenset[str] = frozenset({"running", "waiting"})
@@ -546,6 +547,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
     risk_area: str = "",
     phase: str = "",
     evidence_ids: list[str] | None = None,
+    checklist_codes: list[str] | None = None,
     stop_conditions: list[str] | None = None,
     dispatch_key: str = "",
 ) -> str:
@@ -587,6 +589,9 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
     - ``phase`` is ``discovery``, ``testing``, ``validation``, or
       ``impact_review``.
     - ``evidence_ids`` names recon/request/finding records supporting the task.
+    - ``checklist_codes`` assigns the methodology classes this child owns;
+      every specialist/validator on checklist-enabled runs must receive at
+      least one code so the planner can reconcile work without guessing.
     - ``dispatch_key`` should be stable for the run (for example
       ``api.example.test|tenant-api|idor|testing``); an active or completed
       child with the same key is not spawned again.
@@ -617,6 +622,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
         risk_area: One vulnerability family or hypothesis area.
         phase: Lifecycle phase for this child.
         evidence_ids: IDs of durable observations supporting the dispatch.
+        checklist_codes: Stable methodology checklist codes owned by the child.
         stop_conditions: Concrete conditions for ending the child.
         dispatch_key: Stable deduplication key for this responsibility.
     """
@@ -655,6 +661,9 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
     risk_value = risk_area.strip()
     phase_value = phase.strip()
     evidence_values = [str(value).strip() for value in (evidence_ids or []) if str(value).strip()]
+    checklist_values = [
+        str(value).strip() for value in (checklist_codes or []) if str(value).strip()
+    ]
     stop_values = [str(value).strip() for value in (stop_conditions or []) if str(value).strip()]
     dispatch_value = dispatch_key.strip() or _derived_dispatch_key(
         role=role_value,
@@ -692,6 +701,16 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
             },
             ensure_ascii=False,
         )
+    unknown_checklist_codes = validate_checklist_codes(checklist_values)
+    if unknown_checklist_codes:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Unknown checklist code(s): " + ", ".join(unknown_checklist_codes),
+                "checklist_codes": checklist_values,
+            },
+            ensure_ascii=False,
+        )
     if parent_is_root and live_target and scan_mode in {"standard", "deep"}:
         required_metadata = [
             field
@@ -704,6 +723,12 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
         ]
         if role_value not in {"recon", "source_mapper"} and not evidence_values:
             required_metadata.append("evidence_ids")
+        if (
+            inner.get("checklist_enabled")
+            and role_value not in {"recon", "source_mapper"}
+            and not checklist_values
+        ):
+            required_metadata.append("checklist_codes")
         if required_metadata:
             return json.dumps(
                 {
@@ -802,6 +827,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
             "risk_area": risk_value,
             "phase": phase_value,
             "evidence_ids": evidence_values,
+            "checklist_codes": checklist_values,
             "stop_conditions": stop_values,
             "dispatch_key": dispatch_value,
         }
@@ -859,6 +885,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
                     ),
                     "source_node_ids": [f"run:{inner.get('scan_id')}"] if parent_is_root else [],
                     "source_information": evidence_values,
+                    "checklist_codes": checklist_values,
                     "agent_id": result.get("agent_id"),
                 },
             )
