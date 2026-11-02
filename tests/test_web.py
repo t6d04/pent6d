@@ -47,6 +47,24 @@ def test_web_projects_persist_their_separate_scope(
     assert restored["targets"] == ["https://portal.example.test"]
 
 
+def test_web_add_target_creates_default_project_for_fresh_hub(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first Enter/Add target action works without opening Projects first."""
+    monkeypatch.chdir(tmp_path)
+    args, _ = parse_web_arguments([])
+    runtime = WebRuntime(args)
+
+    assert runtime.web_state()["state"]["active_project_id"] is None
+
+    result = runtime.web_command("setup.add_target", {"target": "https://portal.example.test"})
+
+    state = runtime.web_state()["state"]
+    assert result == {"target": "https://portal.example.test", "total": 1}
+    assert state["active_project_name"] == "New project"
+    assert state["targets"] == ["https://portal.example.test"]
+
+
 def test_web_migrates_finished_project_runs_from_legacy_global_storage(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

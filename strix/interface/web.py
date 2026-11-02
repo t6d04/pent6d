@@ -293,6 +293,26 @@ class WebRuntime:
             raise ValueError("Create and select a project before configuring a scan")
         return project
 
+    def _ensure_setup_project(self) -> dict[str, Any]:
+        """Return the active setup project, creating one for a fresh hub.
+
+        The browser setup screen is intentionally usable without a CLI
+        ``--target``.  In that path there is no project yet, so the first
+        ``Add target``/Enter action must not fail merely because the operator
+        has not visited the Projects tab first.  Explicit project selection is
+        still preserved when projects already exist.
+        """
+        project = self._active_project()
+        if project is not None:
+            return project
+
+        project = self._new_project("New project")
+        self.projects.append(project)
+        self.active_project_id = str(project["id"])
+        self._save_projects()
+        self._add_message("Created project New project for the new scan.")
+        return project
+
     def _project_summary(self, project: dict[str, Any]) -> dict[str, Any]:
         run_names = [name for name in project.get("run_names", []) if isinstance(name, str)]
         run_names.reverse()
@@ -402,7 +422,9 @@ class WebRuntime:
         return value.strip()
 
     def _add_target(self, payload: dict[str, Any]) -> dict[str, Any]:
-        project = self._require_project()
+        # Adding the first authorized target is the natural entry point for
+        # the setup screen.  Do not require a separate project-creation step.
+        project = self._ensure_setup_project()
         target = self._required_string(payload, "target")
         targets = project["targets"]
         if target not in targets:
