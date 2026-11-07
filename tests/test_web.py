@@ -254,3 +254,61 @@ async def test_web_hub_continues_a_finished_run_in_its_own_session(
         "--max-turns",
         str(runtime.max_turns),
     ]
+
+
+@pytest.mark.asyncio
+async def test_web_hub_resumes_an_interrupted_run(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    args, _ = parse_web_arguments(["--target", "https://example.test"])
+    runtime = WebRuntime(args)
+    runtime._loop = asyncio.get_running_loop()
+    project = runtime._active_project()
+    assert project is not None
+    run_name = "example-test_interrupted"
+    project["run_names"].append(run_name)
+    run_dir = runtime._project_runs_dir(project) / run_name
+    state_dir = run_dir / ".state"
+    state_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text('{"status": "interrupted"}', encoding="utf-8")
+    (state_dir / "agents.json").write_text("{}", encoding="utf-8")
+    (state_dir / "agents.db").write_bytes(b"session")
+
+    async def verified(_model: str) -> None:
+        return None
+
+    launched: list[list[str]] = []
+
+    class Process:
+        pid = 2027
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def spawn(command, **_kwargs):
+        launched.append(command)
+        return Process()
+
+    monkeypatch.setattr("strix.interface.web.preflight_model_connection", verified)
+    monkeypatch.setattr("strix.interface.web.subprocess.Popen", spawn)
+    monkeypatch.setenv("STRIX_LLM", "test/model")
+
+    result = await asyncio.to_thread(
+        runtime.web_command,
+        "run.resume",
+        {"run_name": run_name},
+    )
+
+    assert result["started"] is True
+    assert result["pid"] == 2027
+    assert launched[0][1:] == [
+        "-m",
+        "strix.interface.main",
+        "-n",
+        "--resume",
+        run_name,
+        "--max-turns",
+        str(runtime.max_turns),
+    ]

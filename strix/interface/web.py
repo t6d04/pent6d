@@ -402,6 +402,7 @@ class WebRuntime:
             "project.create": self._create_project,
             "project.select": self._select_project,
             "run.chat": self._chat_run,
+            "run.resume": self._resume_run,
             "run.stop": self._stop_run,
             "settings.save_llm": self._save_llm,
             "settings.save_web_search": self._save_web_search,
@@ -607,6 +608,69 @@ class WebRuntime:
 
         process = self._launch_worker(project, run_name, command, kind="chat")
         self._add_message(f"Continuing {run_name} with a follow-up message.")
+        return {
+            "started": True,
+            "run_name": run_name,
+            "pid": process.pid,
+            "project_id": project["id"],
+        }
+
+    def _resume_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Resume an interrupted scan from its persisted agent session."""
+        project = self._require_project()
+        run_name = self._required_string(payload, "run_name")
+        if run_name not in project.get("run_names", []):
+            raise ValueError("This run is not part of the selected project")
+        if Path(run_name).name != run_name or run_name in {"", ".", ".."}:
+            raise ValueError("Invalid run name")
+
+        run_dir = self._project_runs_dir(project) / run_name
+        record_path = run_record_path(run_dir)
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ValueError("The selected run has no saved record") from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("The selected run record is unreadable") from exc
+        if not isinstance(record, dict) or str(record.get("status", "")).lower() != "interrupted":
+            raise ValueError("Only an interrupted run can be continued")
+
+        state_dir = runtime_state_dir(run_dir)
+        if not (state_dir / "agents.json").is_file() or not (state_dir / "agents.db").is_file():
+            raise ValueError("This run does not have a saved agent session to continue")
+
+        process = self._workers.get(run_name)
+        if process is not None and process.poll() is None:
+            raise ValueError("This run is already being continued")
+
+        model = (load_settings().llm.model or "").strip()
+        if not model:
+            raise ValueError("No model configured. Save a model before continuing the scan.")
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("Web runtime is not ready")
+        future = asyncio.run_coroutine_threadsafe(preflight_model_connection(model), loop)
+        try:
+            future.result(timeout=310)
+        except TimeoutError as exc:
+            raise RuntimeError("Model connection timed out") from exc
+
+        command = [
+            sys.executable,
+            "-m",
+            "strix.interface.main",
+            "-n",
+            "--resume",
+            run_name,
+        ]
+        if self.max_turns:
+            command.extend(["--max-turns", str(self.max_turns)])
+        if self.args.config:
+            command.extend(["--config", self.args.config])
+
+        self._stopping_workers.discard(run_name)
+        process = self._launch_worker(project, run_name, command, kind="resume")
+        self._add_message(f"Continuing interrupted run {run_name}.")
         return {
             "started": True,
             "run_name": run_name,

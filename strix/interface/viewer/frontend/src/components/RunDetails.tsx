@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Info, LoaderCircle, Square } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, LoaderCircle, Play, Square } from "lucide-react";
 import { formatNumber } from "@/lib/display-number";
 
 /**
@@ -51,15 +51,19 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 export function RunDetails({
   raw,
   durationSeconds,
+  onResume,
   onStop,
 }: {
   raw: Rec;
   durationSeconds: number | null;
+  onResume?: () => Promise<void>;
   onStop?: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(true);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   const stop = async () => {
     if (!onStop || stopping) return;
@@ -71,6 +75,19 @@ export function RunDetails({
     } catch (cause) {
       setStopping(false);
       setStopError(cause instanceof Error ? cause.message : "Không thể dừng run.");
+    }
+  };
+
+  const resume = async () => {
+    if (!onResume || resuming) return;
+    setResuming(true);
+    setResumeError(null);
+    try {
+      await onResume();
+      setResuming(false);
+    } catch (cause) {
+      setResuming(false);
+      setResumeError(cause instanceof Error ? cause.message : "Không thể tiếp tục run.");
     }
   };
 
@@ -125,7 +142,7 @@ export function RunDetails({
 
   return (
     <div className="rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)] p-5">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -140,12 +157,23 @@ export function RunDetails({
             <ChevronDown className="ml-auto h-4 w-4 text-[#666]" aria-hidden="true" />
           )}
         </button>
+        {onResume && (
+          <button
+            type="button"
+            onClick={() => void resume()}
+            disabled={resuming}
+            className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-emerald-500/40 px-2.5 py-1 text-xs font-medium text-emerald-300 transition-colors hover:border-emerald-400 hover:bg-emerald-500/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
+          >
+            {resuming ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+            {resuming ? "Đang tiếp tục…" : "Tiếp tục run"}
+          </button>
+        )}
         {onStop && (
           <button
             type="button"
             onClick={() => void stop()}
             disabled={stopping}
-            className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-red-500/40 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
+            className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-red-500/40 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/10 aria-disabled:cursor-wait aria-disabled:opacity-60"
           >
             {stopping ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
             {stopping ? "Đang dừng…" : "Dừng run"}
@@ -153,7 +181,7 @@ export function RunDetails({
         )}
       </div>
 
-      {stopError && <p className="mt-3 text-xs text-red-300">{stopError}</p>}
+      {(stopError || resumeError) && <p className="mt-3 text-xs text-red-300">{stopError ?? resumeError}</p>}
 
       {open && (
       <div className="mt-4 grid grid-cols-1 gap-x-8 gap-y-6 md:grid-cols-2">

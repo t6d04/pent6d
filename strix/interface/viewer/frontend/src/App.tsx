@@ -78,6 +78,7 @@ function ViewerApp({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("overview");
   const [runs, setRuns] = useState<RunsPayload | null>(null);
+  const [runRevision, setRunRevision] = useState(0);
   // Whether this viewer can steer a live scan (true only inside the in-TUI
   // launcher that shares the running scan's coordinator + event loop).
   const [canSteer, setCanSteer] = useState(false);
@@ -161,7 +162,13 @@ function ViewerApp({
         const { summary, raw, finished } = await fetchRunSummary(activeRun);
         if (cancelled) return;
         setError(null);
-        if (finished && !finishedRef.current) {
+        const workerActive = Boolean(
+          webControl?.state.workers.some(
+            (worker) => worker.run_name === activeRun && worker.state !== "exited"
+          )
+        );
+        if (workerActive) finishedRef.current = false;
+        if (finished && !workerActive && !finishedRef.current) {
           finishedRef.current = true;
           const full = await fetchAll(activeRun);
           if (!cancelled) setRun(full);
@@ -204,7 +211,12 @@ function ViewerApp({
         if (cancelled) return;
         setError(null);
         setRun(full);
-        if (full.finished) {
+        const workerActive = Boolean(
+          webControl?.state.workers.some(
+            (worker) => worker.run_name === activeRun && worker.state !== "exited"
+          )
+        );
+        if (full.finished && !workerActive) {
           finishedRef.current = true;
         } else {
           schedule();
@@ -220,7 +232,7 @@ function ViewerApp({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeRun, webControl]);
+  }, [activeRun, runRevision, webControl]);
 
   const counts = useMemo(
     () => (run ? severityCounts(run.vulnerabilities) : null),
@@ -319,12 +331,29 @@ function ViewerApp({
     await onRefreshWebControl?.();
   }, [activeRun, onRefreshWebControl]);
 
+  const resumeActiveRun = useCallback(async () => {
+    if (!activeRun) throw new Error("Không xác định được run cần tiếp tục.");
+    await webCommand("run.resume", { run_name: activeRun });
+    await onRefreshWebControl?.();
+    setRunRevision((revision) => revision + 1);
+  }, [activeRun, onRefreshWebControl]);
+
   const canStopActiveRun = Boolean(
     webControl &&
       activeRun &&
       !run?.finished &&
       webControl.state.workers.some(
         (worker) => worker.run_name === activeRun && worker.state === "running"
+      )
+  );
+
+  const canResumeActiveRun = Boolean(
+    webControl &&
+      activeRun &&
+      run?.finished &&
+      run.summary.status?.toLowerCase() === "interrupted" &&
+      !webControl.state.workers.some(
+        (worker) => worker.run_name === activeRun && worker.state !== "exited"
       )
   );
 
@@ -519,6 +548,7 @@ function ViewerApp({
                   total={run.vulnerabilities.length}
                   reportMarkdown={run.reportMarkdown}
                   raw={run.raw}
+                  onResume={canResumeActiveRun ? resumeActiveRun : undefined}
                   onStop={canStopActiveRun ? stopActiveRun : undefined}
                   runName={activeRun}
                 />
@@ -754,6 +784,7 @@ function OverviewTab({
   total,
   reportMarkdown,
   raw,
+  onResume,
   onStop,
   runName,
 }: {
@@ -762,6 +793,7 @@ function OverviewTab({
   total: number;
   reportMarkdown: string | null;
   raw: Record<string, unknown>;
+  onResume?: () => Promise<void>;
   onStop?: () => Promise<void>;
   runName: string | null;
 }) {
@@ -779,7 +811,7 @@ function OverviewTab({
   return (
     <div className="space-y-6">
       <div className="animate-card-in">
-        <RunDetails raw={raw} durationSeconds={summary.durationSeconds} onStop={onStop} />
+        <RunDetails raw={raw} durationSeconds={summary.durationSeconds} onResume={onResume} onStop={onStop} />
       </div>
 
       <div className="animate-card-in rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)] px-5 py-3">
