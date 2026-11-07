@@ -267,11 +267,11 @@ export default function WebSetup({
     </>
   );
 
-  if (embedded) return <section className="w-full max-w-[min(100%,64rem)] space-y-7">{content}</section>;
+  if (embedded) return <section className="mx-auto w-full max-w-[min(100%,68rem)] space-y-7">{content}</section>;
 
   return (
     <main className="min-h-screen bg-black px-[clamp(0.75rem,3vw,2rem)] py-[clamp(1.5rem,5vw,2.5rem)] text-white">
-      <section className="mx-auto w-full max-w-[min(100%,64rem)] space-y-7">{content}</section>
+      <section className="mx-auto w-full max-w-[min(100%,68rem)] space-y-7">{content}</section>
     </main>
   );
 }
