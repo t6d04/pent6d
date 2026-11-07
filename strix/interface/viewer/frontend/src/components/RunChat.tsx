@@ -161,7 +161,7 @@ export default function RunChat({
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="mx-auto w-full max-w-[min(100%,72rem)] space-y-5">
       <div>
         <h1 className="text-2xl font-semibold text-white">Chat with agent</h1>
         <p className="mt-1 text-sm text-[#888]">
@@ -170,7 +170,7 @@ export default function RunChat({
       </div>
 
       <section className="overflow-hidden rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)]">
-        <div className="max-h-[58vh] min-h-72 space-y-4 overflow-y-auto p-4 sm:p-5">
+        <div className="max-h-[min(68vh,52rem)] min-h-[clamp(18rem,35vh,26rem)] space-y-4 overflow-y-auto p-[clamp(0.75rem,2vw,1.25rem)]">
           {conversation.length === 0 && !pendingMessage ? (
             <p className="py-12 text-center text-sm text-[#666]">Chưa có hội thoại tiếp nối cho run này.</p>
           ) : (
@@ -218,7 +218,7 @@ export default function RunChat({
               {working ? "Hoạt động và thinking của agent" : "Xem hoạt động và thinking của agent"}
               {working && <span className="ml-auto h-2 w-2 rounded-full bg-emerald-400 animate-pulse" aria-label="Agent đang chạy" />}
             </summary>
-            <div className="max-h-[42vh] overflow-y-auto border-t border-[#1a1a1a] px-4 py-2">
+            <div className="max-h-[min(55vh,42rem)] overflow-y-auto border-t border-[#1a1a1a] px-[clamp(0.75rem,2vw,1.25rem)] py-2">
               <AgentTranscript agent={rootAgent} events={rootEvents} showHeader={false} />
             </div>
           </details>

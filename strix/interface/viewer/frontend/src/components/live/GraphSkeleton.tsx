@@ -2,7 +2,7 @@
 
 function SkeletonNode({ w = 24 }: { w?: number }) {
   return (
-    <div className="w-[180px] h-[72px] rounded-lg border border-[#222] bg-[#0a0a0a] px-3 py-2 shrink-0">
+    <div className="h-[clamp(4.25rem,8vw,5rem)] w-[clamp(10rem,18vw,13rem)] shrink-0 rounded-lg border border-[#222] bg-[#0a0a0a] px-3 py-2">
       <div className="flex items-center gap-2 mb-1.5">
         <div className="w-2 h-2 rounded-full bg-[#2a2a2a]" />
         <div className="h-3 rounded bg-[#252525]" style={{ width: `${w * 4}px` }} />
@@ -62,7 +62,7 @@ export default function GraphSkeleton() {
             <VLine />
             <SkeletonNode w={12} />
           </div>
-          <div className="w-[180px]" />
+          <div className="w-[clamp(10rem,18vw,13rem)]" />
         </div>
       </div>
     </div>

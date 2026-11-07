@@ -47,7 +47,7 @@ export default function ProjectsView({ control, onRefresh, onOpenNewRun, onProje
   };
 
   return (
-    <section className="max-w-3xl space-y-6">
+    <section className="w-full max-w-[min(100%,64rem)] space-y-6">
       <header>
         <div className="flex items-center gap-2 text-emerald-400">
           <FolderPlus className="h-5 w-5" aria-hidden="true" />

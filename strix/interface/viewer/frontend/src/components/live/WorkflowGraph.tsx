@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -20,8 +20,8 @@ import type { WorkflowGraph as WorkflowGraphData, WorkflowLane, WorkflowNode } f
 
 import "@xyflow/react/dist/style.css";
 
-const LANE_WIDTH = 280;
-const NODE_WIDTH = 240;
+const DEFAULT_LANE_WIDTH = 280;
+const DEFAULT_NODE_WIDTH = 240;
 
 const FALLBACK_LANES: WorkflowLane[] = [
   "Scope",
@@ -111,7 +111,7 @@ function LaneLabelComponent({ data }: NodeProps) {
 
 const nodeTypes = { workflowNode: memo(WorkflowNodeComponent), laneLabel: memo(LaneLabelComponent) };
 
-function buildElements(workflow: WorkflowGraphData) {
+function buildElements(workflow: WorkflowGraphData, laneWidth: number, nodeWidth: number) {
   const occupied = new Set(workflow.nodes.map((node) => node.lane));
   const lanes = (workflow.lanes.length > 0 ? [...workflow.lanes] : FALLBACK_LANES)
     .filter((lane) => lane.node_count > 0 || occupied.has(lane.id))
@@ -128,26 +128,26 @@ function buildElements(workflow: WorkflowGraphData) {
   const nodes: Node[] = visibleLanes.map((lane, index) => ({
     id: `lane:${lane.id}`,
     type: "laneLabel",
-    position: { x: index * LANE_WIDTH + 10, y: 8 },
+    position: { x: index * laneWidth + 10, y: 8 },
     data: lane,
     draggable: false,
     selectable: false,
     zIndex: -1,
-    style: { width: LANE_WIDTH - 20 },
+    style: { width: laneWidth - 20 },
   }));
 
   const positions = new Map<string, { x: number; y: number }>();
   for (const [laneId, laneNodes] of byLane) {
     const index = laneIndex.get(laneId) ?? 0;
     laneNodes.forEach((node, nodeIndex) => {
-      const position = { x: index * LANE_WIDTH + 10, y: 50 + nodeIndex * 138 };
+      const position = { x: index * laneWidth + 10, y: 50 + nodeIndex * 138 };
       positions.set(node.id, position);
       nodes.push({
         id: node.id,
         type: "workflowNode",
         position,
         data: node,
-        style: { width: NODE_WIDTH },
+        style: { width: nodeWidth },
       });
     });
   }
@@ -190,7 +190,18 @@ interface WorkflowGraphProps {
 }
 
 export default function WorkflowGraph({ workflow, selectedNodeId, onSelectNode }: WorkflowGraphProps) {
-  const elements = useMemo(() => buildElements(workflow), [workflow]);
+  const [metrics, setMetrics] = useState({ laneWidth: DEFAULT_LANE_WIDTH, nodeWidth: DEFAULT_NODE_WIDTH });
+  useEffect(() => {
+    const updateMetrics = () => {
+      const viewportWidth = window.innerWidth;
+      const nodeWidth = Math.round(Math.min(300, Math.max(210, viewportWidth * 0.18)));
+      setMetrics({ nodeWidth, laneWidth: nodeWidth + 40 });
+    };
+    updateMetrics();
+    window.addEventListener("resize", updateMetrics);
+    return () => window.removeEventListener("resize", updateMetrics);
+  }, []);
+  const elements = useMemo(() => buildElements(workflow, metrics.laneWidth, metrics.nodeWidth), [metrics, workflow]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(elements.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(elements.edges);
 

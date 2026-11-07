@@ -116,17 +116,17 @@ export function AgentDetailModal({
   return (
     <div
       data-state={state}
-      className="agent-modal fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 sm:p-8"
+      className="agent-modal fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-[clamp(0.75rem,3vw,2rem)]"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label={`Agent ${shownAgent.name}`}
     >
       <div
-        className="relative flex h-[60vh] w-[calc(100vw-4rem)] max-w-6xl flex-col overflow-hidden rounded-xl border border-[#222] bg-[#0a0a0a] shadow-2xl"
+        className="relative flex h-[min(82vh,56rem)] min-h-[20rem] w-full max-w-[min(100%,90rem)] flex-col overflow-hidden rounded-xl border border-[#222] bg-[#0a0a0a] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-[#222] px-5 py-3.5">
+        <div className="flex items-center justify-between gap-3 border-b border-[#222] px-[clamp(0.75rem,2vw,1.25rem)] py-3.5">
           <div className="flex min-w-0 items-center gap-2">
             <span
               className={`h-2 w-2 flex-shrink-0 rounded-full ${STATUS_DOT[shownAgent.status] ?? "bg-[#888]"}`}
@@ -144,14 +144,14 @@ export function AgentDetailModal({
           </button>
         </div>
 
-        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-5">
+        <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto p-[clamp(0.75rem,2vw,1.25rem)]">
           {contentReady && (
             <AgentTranscript agent={shownAgent} events={events} showHeader={false} />
           )}
         </div>
 
         {steerable && (
-          <div className="border-t border-[#222] px-5 py-3">
+          <div className="border-t border-[#222] px-[clamp(0.75rem,2vw,1.25rem)] py-3">
             <ScanPromptComposer
               agents={[shownAgent]}
               fixedAgentId={shownAgent.id}

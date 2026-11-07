@@ -392,7 +392,7 @@ function ViewerApp({
       <div className="flex-1 min-w-0">
         {/* Top bar */}
         <div className="border-b border-[#222]">
-          <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-4 flex items-center gap-1.5">
+          <div className="mx-auto flex w-full max-w-[min(100%,120rem)] items-center gap-1.5 px-[clamp(0.75rem,2.2vw,2.5rem)] py-4">
             <div className="flex items-center gap-1.5 opacity-90 lg:hidden">
               <img src="./logo.png" alt="Pent6d" className="w-10 h-8 object-cover" />
               <div className="text-base text-white font-medium tracking-tight">Pent6d</div>
@@ -424,7 +424,7 @@ function ViewerApp({
           </div>
         </div>
 
-        <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-8 sm:py-12 space-y-6">
+        <div className="mx-auto w-full max-w-[min(100%,120rem)] space-y-6 px-[clamp(0.75rem,2.2vw,2.5rem)] py-[clamp(1.5rem,4vw,3rem)]">
           {error && !run && view !== "history" && !webControl && (
             <div className="rounded-lg px-4 py-3 flex gap-3 items-start border border-red-500/30 bg-red-500/5">
               <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-red-400" aria-hidden="true" />
@@ -587,12 +587,12 @@ function RunSwitcher({
       >
         <History className="h-4 w-4 flex-shrink-0 text-[#888]" aria-hidden="true" />
         <span className="flex-shrink-0 text-[#888]">Pentest</span>
-        <span className="max-w-[260px] truncate font-medium">{current}</span>
+        <span className="max-w-[min(32rem,42vw)] truncate font-medium">{current}</span>
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-[#aaa]" aria-hidden="true" />
       </button>
       {open && (
         <div
-          className="absolute right-0 z-50 mt-2 max-h-96 w-96 overflow-y-auto rounded-xl py-1.5 shadow-2xl"
+          className="absolute right-0 z-50 mt-2 max-h-[min(70vh,32rem)] w-[min(28rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl py-1.5 shadow-2xl"
           style={{ border: "1px solid #3a3a3a", background: "#0a0a0a" }}
         >
           <div className="border-b border-[#222] px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">
@@ -869,7 +869,7 @@ function AgentsTab({ run, canSteer }: { run: LoadedRun; canSteer: boolean }) {
           <span><i className="mr-1 inline-block w-4 border-t border-orange-400" />impact</span>
           <span><i className="mr-1 inline-block w-4 border-t border-yellow-400" />chain/report</span>
         </div>
-        <div className="h-[480px] rounded-lg border border-[#1a1a1a] overflow-hidden">
+        <div className="h-[clamp(22rem,62vh,48rem)] min-h-[20rem] overflow-hidden rounded-lg border border-[#1a1a1a]">
           <WorkflowGraph
             workflow={run.workflow}
             selectedNodeId={selectedWorkflowId ?? (selectedId ? `agent:${selectedId}` : null)}
