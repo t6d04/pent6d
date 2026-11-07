@@ -28,6 +28,23 @@ function responseMessage(event: TranscriptEvent): string | null {
   return typeof message === "string" && message.trim() ? message : null;
 }
 
+/**
+ * Return prose that is addressed to the user from a transcript event.
+ *
+ * ``respond_to_user`` is the explicit pause/yield path, but an interactive
+ * resume can also finish with a normal assistant message (for example when
+ * the model answers and then the worker exits).  The activity view renders
+ * those messages as ``Thinking``; the chat view must promote them to a real
+ * assistant reply as well.
+ */
+function assistantMessage(event: TranscriptEvent): string | null {
+  if (event.type !== "chat") return null;
+  const role = String(event.data.role ?? "assistant").toLowerCase();
+  if (role !== "assistant") return null;
+  const content = event.data.content;
+  return typeof content === "string" && content.trim() ? content : null;
+}
+
 function toolLabel(event: TranscriptEvent | undefined): string | null {
   if (!event || event.type !== "tool") return null;
   const name = typeof event.data.tool_name === "string" ? event.data.tool_name : "tool";
@@ -60,13 +77,38 @@ export default function RunChat({
     [rootAgent, transcript.events]
   );
   const conversation = useMemo<ConversationEntry[]>(
-    () => rootEvents.flatMap<ConversationEntry>((event) => {
-      if (event.type === "chat" && event.data.role === "user" && typeof event.data.content === "string" && event.data.content.trim()) {
-        return [{ id: event.id, timestamp: event.timestamp, role: "user" as const, content: event.data.content }];
+    () => {
+      const entries: ConversationEntry[] = [];
+      for (const event of rootEvents) {
+        if (
+          event.type === "chat" &&
+          event.data.role === "user" &&
+          typeof event.data.content === "string" &&
+          event.data.content.trim()
+        ) {
+          entries.push({ id: event.id, timestamp: event.timestamp, role: "user", content: event.data.content });
+          continue;
+        }
+
+        const assistant = assistantMessage(event);
+        if (assistant) {
+          entries.push({ id: event.id, timestamp: event.timestamp, role: "assistant", content: assistant });
+          continue;
+        }
+
+        const reply = responseMessage(event);
+        if (reply) {
+          // Some model adapters emit the same prose as a normal assistant
+          // message and then call respond_to_user. Keep only one bubble.
+          const previous = entries[entries.length - 1];
+          if (previous?.role === "assistant" && previous.content.trim() === reply.trim()) {
+            continue;
+          }
+          entries.push({ id: event.id, timestamp: event.timestamp, role: "assistant", content: reply });
+        }
       }
-      const reply = responseMessage(event);
-      return reply ? [{ id: event.id, timestamp: event.timestamp, role: "assistant" as const, content: reply }] : [];
-    }).sort((left, right) => left.timestamp.localeCompare(right.timestamp)),
+      return entries.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    },
     [rootEvents]
   );
   const activeTool = useMemo(
