@@ -25,6 +25,20 @@ function parseTargets(value: string): string[] {
   return targets;
 }
 
+type HeaderRow = {
+  id: number;
+  name: string;
+  value: string;
+  /** True for a header already stored by the hub; its value stays server-side. */
+  existing: boolean;
+};
+
+let nextHeaderId = 1;
+
+function newHeaderRow(name = "", value = "", existing = false): HeaderRow {
+  return { id: nextHeaderId++, name, value, existing };
+}
+
 export default function WebSetup({
   control,
   onRefresh,
@@ -43,6 +57,9 @@ export default function WebSetup({
   );
   const [rateLimitUnit, setRateLimitUnit] = useState(initial.llm_rate_limit_unit);
   const [maxRetries, setMaxRetries] = useState(initial.llm_max_retries.toString());
+  const [headers, setHeaders] = useState<HeaderRow[]>(() =>
+    (initial.llm_extra_headers ?? []).map((name) => newHeaderRow(name, "", true)),
+  );
   const [webSearchProvider, setWebSearchProvider] = useState(initial.web_search_provider);
   const [scanMode, setScanMode] = useState(initial.scan_mode);
   const [budget, setBudget] = useState(initial.max_budget_usd?.toString() ?? "");
@@ -81,6 +98,19 @@ export default function WebSetup({
     if (!Number.isInteger(parsedMaxRetries) || parsedMaxRetries < 0) {
       throw new Error("Retry attempts must be a non-negative whole number.");
     }
+    const extraHeaders = headers.map((row) => {
+      const name = row.name.trim();
+      const value = row.value.trim();
+      if (!name) throw new Error("Every model request header needs a name.");
+      if (!value && !row.existing) throw new Error(`Enter a value for header ${name}.`);
+      return { name, value };
+    });
+    const seenHeaders = new Set<string>();
+    for (const header of extraHeaders) {
+      const key = header.name.toLowerCase();
+      if (seenHeaders.has(key)) throw new Error(`Duplicate model header: ${header.name}`);
+      seenHeaders.add(key);
+    }
     await webCommand("settings.save_llm", {
       model: model.trim(),
       ...(apiKey ? { api_key: apiKey } : {}),
@@ -88,9 +118,26 @@ export default function WebSetup({
       rate_limit_requests: parsedRateLimit,
       rate_limit_unit: rateLimitUnit,
       max_retries: parsedMaxRetries,
+      extra_headers: extraHeaders,
     });
     setApiKey("");
+    // Header values are write-only: clear what was typed and treat the rows
+    // as stored so a later save keeps them without re-entering the secrets.
+    setHeaders((current) => current.map((row) => ({ ...row, value: "", existing: true })));
   });
+
+  const addHeader = () => setHeaders((current) => [...current, newHeaderRow()]);
+
+  const updateHeader = (
+    id: number,
+    patch: Partial<Pick<HeaderRow, "name" | "value">>,
+  ) =>
+    setHeaders((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
+
+  const removeHeader = (id: number) =>
+    setHeaders((current) => current.filter((row) => row.id !== id));
 
   const start = () => run(async () => {
     if (!initial.model) throw new Error("Configure and save a model before starting the scan.");
@@ -164,6 +211,57 @@ export default function WebSetup({
           <label className="block space-y-2 text-sm font-semibold">API base <span className="font-normal text-[#777]">optional</span>
             <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} placeholder="https://gateway.example/v1" className="block w-full rounded-md border border-[#333] bg-black px-3 py-2.5 text-sm font-normal outline-none focus:border-white" />
           </label>
+          <div className="rounded-lg border border-[#272727] bg-black/40 p-4 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold">Custom model request headers</h3>
+                <p className="mt-1 text-xs leading-5 text-[#888]">
+                  Sent on every request to the model provider, for gateways that need tenant or
+                  attribution headers. Stored locally with the model connection; values are never
+                  shown again after saving.
+                </p>
+              </div>
+              <button type="button" disabled={busy} onClick={addHeader} className="inline-flex items-center gap-1.5 rounded-md border border-[#444] px-3 py-1.5 text-xs font-semibold hover:border-[#777] disabled:opacity-50">
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add header
+              </button>
+            </div>
+            {headers.length === 0 ? (
+              <p className="text-sm text-[#777]">No custom headers configured.</p>
+            ) : (
+              <div className="space-y-2">
+                {headers.map((row) => (
+                  <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                    <input
+                      value={row.name}
+                      onChange={(event) => updateHeader(row.id, { name: event.target.value })}
+                      disabled={row.existing}
+                      aria-label="Header name"
+                      placeholder="X-Tenant-Id"
+                      className="block w-full rounded-md border border-[#333] bg-black px-3 py-2.5 text-sm outline-none focus:border-white disabled:opacity-60"
+                    />
+                    <input
+                      value={row.value}
+                      onChange={(event) => updateHeader(row.id, { value: event.target.value })}
+                      type="password"
+                      autoComplete="new-password"
+                      aria-label={`Value for ${row.name || "new header"}`}
+                      placeholder={row.existing ? "Leave blank to keep current value" : "Header value"}
+                      className="block w-full rounded-md border border-[#333] bg-black px-3 py-2.5 text-sm outline-none focus:border-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => removeHeader(row.id)}
+                      aria-label={`Remove ${row.name || "header"}`}
+                      className="inline-flex items-center justify-center rounded-md border border-[#333] px-3 text-[#a3a3a3] hover:border-red-500/50 hover:text-red-300 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="rounded-lg border border-[#272727] bg-black/40 p-4 space-y-3">
             <div>
               <h3 className="text-sm font-semibold">Model request rate limit</h3>

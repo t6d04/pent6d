@@ -383,6 +383,9 @@ class WebRuntime:
                     "llm_rate_limit_requests": llm.rate_limit_requests,
                     "llm_rate_limit_unit": llm.rate_limit_unit,
                     "llm_max_retries": llm.max_retries,
+                    # Only names leave the hub: header values often carry
+                    # credentials and are never echoed back to the browser.
+                    "llm_extra_headers": sorted((llm.extra_headers or {}).keys()),
                     "web_search_provider": settings.integrations.web_search_provider,
                     "native_web_search_available": native_web_search_supported(llm),
                     "model_warning": "",
@@ -616,7 +619,12 @@ class WebRuntime:
         }
 
     def _resume_run(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Resume an interrupted scan from its persisted agent session."""
+        """Resume an interrupted or failed scan from its persisted agent session.
+
+        A failed run is often a provider-side model outage rather than a bad
+        assessment. Its agent session is still on disk, so let the operator
+        retry it once the model is back instead of forcing a fresh scan.
+        """
         project = self._require_project()
         run_name = self._required_string(payload, "run_name")
         if run_name not in project.get("run_names", []):
@@ -632,8 +640,9 @@ class WebRuntime:
             raise ValueError("The selected run has no saved record") from exc
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("The selected run record is unreadable") from exc
-        if not isinstance(record, dict) or str(record.get("status", "")).lower() != "interrupted":
-            raise ValueError("Only an interrupted run can be continued")
+        status = str(record.get("status", "")).lower() if isinstance(record, dict) else ""
+        if status not in {"interrupted", "failed"}:
+            raise ValueError("Only an interrupted or failed run can be continued")
 
         state_dir = runtime_state_dir(run_dir)
         if not (state_dir / "agents.json").is_file() or not (state_dir / "agents.db").is_file():
@@ -670,7 +679,7 @@ class WebRuntime:
 
         self._stopping_workers.discard(run_name)
         process = self._launch_worker(project, run_name, command, kind="resume")
-        self._add_message(f"Continuing interrupted run {run_name}.")
+        self._add_message(f"Continuing {status} run {run_name}.")
         return {
             "started": True,
             "run_name": run_name,
@@ -686,6 +695,7 @@ class WebRuntime:
         rate_limit_requests = payload.get("rate_limit_requests", current_llm.rate_limit_requests)
         rate_limit_unit = payload.get("rate_limit_unit", current_llm.rate_limit_unit)
         max_retries = payload.get("max_retries", current_llm.max_retries)
+        extra_headers = self._resolve_extra_headers(payload, current_llm.extra_headers)
         if api_key is not None and not isinstance(api_key, str):
             raise TypeError("api_key must be a string")
         if api_base is not None and not isinstance(api_base, str):
@@ -707,6 +717,7 @@ class WebRuntime:
             rate_limit_requests=rate_limit_requests,
             rate_limit_unit=rate_limit_unit,
             max_retries=max_retries,
+            extra_headers=extra_headers,
         )
         llm = load_settings().llm
         return {
@@ -716,7 +727,52 @@ class WebRuntime:
             "llm_rate_limit_requests": llm.rate_limit_requests,
             "llm_rate_limit_unit": llm.rate_limit_unit,
             "llm_max_retries": llm.max_retries,
+            "llm_extra_headers": sorted((llm.extra_headers or {}).keys()),
         }
+
+    @staticmethod
+    def _resolve_extra_headers(
+        payload: dict[str, Any], current: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        """Merge the setup screen's header rows with the stored values.
+
+        The browser only ever sees header names. A row with a blank value keeps
+        the stored value for that name, which lets an operator remove a header
+        (drop its row) or replace its secret without the old value being sent
+        back to the page. ``None`` means "leave the stored headers untouched".
+        """
+        rows = payload.get("extra_headers")
+        if rows is None:
+            return None
+        if not isinstance(rows, list):
+            raise TypeError("extra_headers must be a list of {name, value} rows")
+
+        stored = {name.casefold(): (name, value) for name, value in (current or {}).items()}
+        resolved: dict[str, str] = {}
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise TypeError("each extra header must be an object with name and value")
+            raw_name = row.get("name")
+            raw_value = row.get("value", "")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                raise ValueError("each extra header needs a name")
+            if not isinstance(raw_value, str):
+                raise TypeError(f"header {raw_name!r} value must be a string")
+            name = raw_name.strip()
+            folded = name.casefold()
+            if folded in seen:
+                raise ValueError(f"duplicate extra header: {name}")
+            seen.add(folded)
+            value = raw_value.strip()
+            if value:
+                resolved[name] = value
+                continue
+            existing = stored.get(folded)
+            if existing is None:
+                raise ValueError(f"extra header {name!r} needs a value")
+            resolved[existing[0]] = existing[1]
+        return resolved
 
     def _save_web_search(self, payload: dict[str, Any]) -> dict[str, Any]:
         provider = self._required_string(payload, "provider")

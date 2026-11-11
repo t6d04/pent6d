@@ -58,8 +58,13 @@ client-side sinks, `postMessage`, unsafe framework rendering, or weak CSP.
 
 **Method:** load `xss`; add `browser_security` for DOM, context, worker, popup,
 or cross-origin behaviour. Identify source → transform → sink and the exact
-parser context before selecting any test. Require controlled script execution
-or a safe equivalent browser proof; reflection alone is not XSS.
+parser context before selecting any test. Test POST/PUT/PATCH body fields,
+multipart fields and WebForms postbacks as sources, not only query strings; if
+the same logical field exists in GET and POST, test both. Require controlled
+script execution or a safe equivalent browser proof; reflection alone is not
+XSS. For stored XSS, name and test the actual consumer (admin/moderation,
+public detail, email/PDF); an unreachable consumer is an open proof gap, not a
+rule-out.
 
 ### CSRF, clickjacking, and CORS
 

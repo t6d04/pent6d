@@ -59,6 +59,9 @@ For each in-scope asset, retain:
   redirect chain;
 - route, method, parameter, content type, authentication role and object/tenant
   identifiers where observed;
+- for every form or API body: action, method, `enctype`, and every field name
+  (including hidden WebForms state and multipart metadata). A URL-only entry is
+  not a POST-body inventory;
 - source artifact (live page, JavaScript, CT, archive, DNS, scanner) and the
   exact request or file that supports the observation;
 - recommended downstream skill and confidence (`observed`, `inferred`, or
@@ -117,6 +120,12 @@ needed.
 Check `robots.txt`, `sitemap.xml`, OpenAPI/Swagger, GraphQL discovery, common
 health/debug paths, and alternate HTTP methods when the normal request makes
 them relevant. A discovered route is a candidate surface, not a finding.
+
+Enumerate forms and request bodies as a first-class workstream
+(`form_discovery`): record each form's action, method, `enctype`, every field,
+and whether the field is reflected, stored, or merely consumed. Include the
+POST twin of every search/filter page; query-string coverage alone is
+incomplete for an XSS or injection dispatch.
 
 ### 5. Historical URL and Parameter Mining
 
@@ -202,8 +211,8 @@ Recon is complete only when the handoff records:
 
 1. the in-scope host/route inventory and any unverified leads;
 2. the sources and timestamps for passive, historical, and active observations;
-3. live probing, crawl, parameter, JavaScript, sensitive-file, and technology
-   coverage (including explicit clean/not-applicable outcomes);
+3. live probing, crawl, parameter, form/POST-body, JavaScript, sensitive-file,
+   and technology coverage (including explicit clean/not-applicable outcomes);
 4. authentication roles, object/tenant boundaries, and state-changing flows
    that need specialist testing;
 5. a prioritized dispatch matrix and open proof gaps.

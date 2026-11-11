@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -30,6 +31,22 @@ CHAIN_OUTCOMES: tuple[str, ...] = (
     "blocked",
 )
 _CHAIN_REVIEWED_COVERAGE_OUTCOMES = frozenset({"reported", "informational"})
+# These outcomes assert that no escalation exists; the caller must say which
+# escalation directions it actually tried before making that claim.
+_CHAIN_UPGRADE_OUTCOMES = frozenset({"no_chain", "ruled_out", "blocked"})
+THINKING_TESTABILITY: tuple[str, ...] = (
+    "testable_now",
+    "needs_credentials",
+    "needs_external",
+    "unknown",
+)
+_CREATIVE_ROLES = frozenset({"hypothesis", "reflection", "chain_reviewer", "gap_closer"})
+_CREATIVE_NAME_MARKERS = (
+    "hypothesis explorer",
+    "planner reflection",
+    "chain and impact",
+    "creative hypothesis",
+)
 
 
 def _caller_identity(ctx: RunContextWrapper) -> tuple[str | None, str | None]:
@@ -164,6 +181,112 @@ def chain_review_status(state: Any | None = None) -> dict[str, Any]:
     }
 
 
+def creative_scorecard(agent_graph: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Summarize what the creative/reflection/chain layer actually produced."""
+    state = get_global_report_state()
+    if state is None:
+        return {"success": False, "error": "No active report state"}
+    graph = agent_graph if isinstance(agent_graph, dict) else {}
+    raw_metadata = graph.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_names = graph.get("names")
+    names: dict[str, Any] = raw_names if isinstance(raw_names, dict) else {}
+    raw_statuses = graph.get("statuses")
+    statuses: dict[str, Any] = raw_statuses if isinstance(raw_statuses, dict) else {}
+
+    creative_ids: set[str] = set()
+    for agent_id in set(metadata) | set(names):
+        raw_meta = metadata.get(agent_id)
+        role = str(raw_meta.get("role") or "").lower() if isinstance(raw_meta, dict) else ""
+        name = str(names.get(agent_id) or "").lower()
+        if role in _CREATIVE_ROLES or any(marker in name for marker in _CREATIVE_NAME_MARKERS):
+            creative_ids.add(str(agent_id))
+    creative_names = {str(names.get(agent_id) or "").lower() for agent_id in creative_ids}
+
+    def _is_creative(agent_id: Any, agent_name: Any) -> bool:
+        if str(agent_id or "") in creative_ids:
+            return True
+        name = str(agent_name or "").lower()
+        return bool(name) and (
+            name in creative_names or any(marker in name for marker in _CREATIVE_NAME_MARKERS)
+        )
+
+    hypotheses = [item for item in state.thinking_hypotheses if isinstance(item, dict)]
+    testability = Counter(str(item.get("testability") or "unknown") for item in hypotheses)
+    reports = [item for item in state.vulnerability_reports if isinstance(item, dict)]
+    report_ids = {str(item.get("id")) for item in reports if item.get("id")}
+    linked_hypotheses = sum(
+        1
+        for item in hypotheses
+        if set(map(str, item.get("related_report_ids") or [])) & report_ids
+    )
+    creative_reports = [
+        item for item in reports if _is_creative(item.get("agent_id"), item.get("agent_name"))
+    ]
+    reviews = state.run_record.get("chain_reviews", [])
+    if not isinstance(reviews, list):
+        reviews = []
+    reviews = [item for item in reviews if isinstance(item, dict)]
+    outcomes = Counter(str(item.get("outcome") or "unknown") for item in reviews)
+    coverage_entries = get_coverage_entries()
+    creative_agents = list(creative_ids)
+    return {
+        "success": True,
+        "hypotheses": {
+            "total": len(hypotheses),
+            "by_testability": dict(testability),
+            "with_related_reports": linked_hypotheses,
+            "from_creative_agents": sum(
+                1
+                for item in hypotheses
+                if _is_creative(item.get("agent_id"), item.get("agent_name"))
+            ),
+        },
+        "chain_reviews": {
+            "total": len(reviews),
+            "by_outcome": dict(outcomes),
+            "upgrade_attempts": sum(
+                len(item.get("upgrade_attempts") or []) for item in reviews
+            ),
+            "validated_chain": outcomes.get("validated_chain", 0),
+            "impact_upgraded": outcomes.get("impact_upgraded", 0),
+        },
+        "findings": {
+            "total": len(reports),
+            "created_by_creative": len(creative_reports),
+            "report_ids": [str(item.get("id")) for item in creative_reports if item.get("id")],
+        },
+        "coverage": {
+            "total": len(coverage_entries),
+            "from_creative_agents": sum(
+                1
+                for entry in coverage_entries
+                if isinstance(entry, dict)
+                and _is_creative(entry.get("agent_id"), entry.get("agent_name"))
+            ),
+        },
+        "agents": {
+            "creative": len(creative_agents),
+            "statuses": Counter(str(statuses.get(agent_id) or "?") for agent_id in creative_agents),
+        },
+    }
+
+
+@function_tool(timeout=30)
+async def get_creative_scorecard(ctx: RunContextWrapper) -> str:
+    """Show how many hypotheses, chain attempts and findings came from creative work.
+
+    Use this before finishing a standard/deep scan to check whether the
+    hypothesis layer produced evidence or only recorded blocked ideas.
+    """
+    inner = ctx.context if isinstance(ctx.context, dict) else {}
+    coordinator = inner.get("coordinator")
+    graph: dict[str, Any] = {}
+    if coordinator is not None and hasattr(coordinator, "snapshot"):
+        graph = await coordinator.snapshot()
+    return json.dumps(creative_scorecard(graph), ensure_ascii=False, default=str)
+
+
 def _record_chain_review_impl(  # noqa: PLR0911
     *,
     reviewed_report_ids: list[str],
@@ -174,6 +297,7 @@ def _record_chain_review_impl(  # noqa: PLR0911
     agent_id: str | None,
     agent_name: str | None,
     reviewed_thinking_ids: list[str] | None = None,
+    upgrade_attempts: list[str] | None = None,
 ) -> dict[str, Any]:
     state, error = _state_or_error()
     if error:
@@ -186,6 +310,23 @@ def _record_chain_review_impl(  # noqa: PLR0911
         }
     if not analysis.strip():
         return {"success": False, "error": "analysis is required"}
+    attempts = list(
+        dict.fromkeys(
+            str(item).strip() for item in (upgrade_attempts or []) if str(item).strip()
+        )
+    )
+    if normalized in _CHAIN_UPGRADE_OUTCOMES and not attempts:
+        return {
+            "success": False,
+            "error": (
+                "Before recording no_chain, ruled_out, or blocked, record at least "
+                "one impact-upgrade direction you actually attempted."
+            ),
+            "hint": (
+                "Pass upgrade_attempts=[...] with one entry per chain or severity "
+                "escalation you tested and why it did not succeed."
+            ),
+        }
 
     required_reports, required_coverage, required_thinking = _required_items(state)
     report_ids = list(
@@ -243,6 +384,7 @@ def _record_chain_review_impl(  # noqa: PLR0911
         "reviewed_thinking_ids": thinking_ids,
         "outcome": normalized,
         "analysis": analysis.strip(),
+        "upgrade_attempts": attempts,
         "upgraded_report_ids": upgraded,
         "report_fingerprints": {
             report_id: _fingerprint(report)
@@ -288,6 +430,7 @@ async def record_chain_review(
     analysis: str,
     upgraded_report_ids: list[str] | None = None,
     reviewed_thinking_ids: list[str] | None = None,
+    upgrade_attempts: list[str] | None = None,
 ) -> str:
     """Record the mandatory post-finding chain and impact-upgrade review.
 
@@ -298,8 +441,11 @@ async def record_chain_review(
     chain changed the severity/impact of an existing report; ``no_chain`` and
     ``ruled_out`` document why combinations did not produce more impact;
     ``blocked`` records a real validation barrier and should normally be
-    accompanied by a ``record_thinking`` hypothesis. ``finish_scan`` refuses
-    to finalize until the union of these calls covers all required IDs.
+    accompanied by a ``record_thinking`` hypothesis. For ``no_chain``,
+    ``ruled_out`` and ``blocked``, ``upgrade_attempts`` is required: list the
+    concrete chain/severity-escalation directions you tried and why each did
+    not succeed. ``finish_scan`` refuses to finalize until the union of these
+    calls covers all required IDs.
     """
     agent_id, agent_name = _caller_identity(ctx)
     result = await asyncio.to_thread(
@@ -312,6 +458,7 @@ async def record_chain_review(
         agent_id=agent_id,
         agent_name=agent_name,
         reviewed_thinking_ids=reviewed_thinking_ids or [],
+        upgrade_attempts=upgrade_attempts or [],
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -333,10 +480,20 @@ def _record_thinking_impl(
     related_report_ids: list[str],
     agent_id: str | None,
     agent_name: str | None,
+    testability: str = "unknown",
 ) -> dict[str, Any]:
     state, error = _state_or_error()
     if error:
         return error
+    normalized_testability = testability.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized_testability not in THINKING_TESTABILITY:
+        return {
+            "success": False,
+            "error": (
+                f"Invalid testability {testability!r}; choose one of "
+                f"{list(THINKING_TESTABILITY)}"
+            ),
+        }
     values = {
         "title": title,
         "hypothesis": hypothesis,
@@ -371,6 +528,7 @@ def _record_thinking_impl(
         "why_unconfirmed": why_unconfirmed.strip(),
         "suggested_validation": suggested_validation.strip(),
         "related_report_ids": related,
+        "testability": normalized_testability,
         "created_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
     if agent_id:
@@ -402,12 +560,20 @@ async def record_thinking(
     why_unconfirmed: str,
     suggested_validation: str,
     related_report_ids: list[str] | None = None,
+    testability: Literal[
+        "testable_now", "needs_credentials", "needs_external", "unknown"
+    ] = "unknown",
 ) -> str:
     """Store an unproven security hypothesis with the visible label ``Thinking``.
 
     Use this for a plausible issue or attack path that was not demonstrated
     and not disproved. It is intentionally excluded from vulnerability counts,
     SARIF findings, and confirmed severity metrics.
+
+    ``testability`` records whether the next step can be tested with the current
+    run's data (``testable_now``), needs credentials, needs an external asset,
+    or is not yet classifiable. Prefer testing ``testable_now`` hypotheses
+    before spending turns on hypotheses that are structurally blocked.
     """
     agent_id, agent_name = _caller_identity(ctx)
     result = await asyncio.to_thread(
@@ -420,6 +586,7 @@ async def record_thinking(
         related_report_ids=related_report_ids or [],
         agent_id=agent_id,
         agent_name=agent_name,
+        testability=testability,
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 

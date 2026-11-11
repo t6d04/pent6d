@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import types
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel
 
@@ -15,8 +18,6 @@ from strix.utils.secret_files import write_secret_text
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from pydantic.fields import FieldInfo
 
 
@@ -31,6 +32,10 @@ _cached: Settings | None = None
 # changes any of them, the stored values of the others no longer belong together
 # and are dropped rather than mixed with the new value.
 _LINKED_LLM_FIELDS = ("model", "api_key", "api_base")
+
+# RFC 7230 ``token``: every legal HTTP header field-name character.
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_MAX_HEADER_VALUE_CHARS = 8_192
 
 
 def load_settings() -> Settings:
@@ -98,16 +103,24 @@ def save_llm_connection(
     rate_limit_requests: int | None = None,
     rate_limit_unit: RateLimitUnit | None = None,
     max_retries: int | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> None:
     """Persist a UI-supplied LLM connection without exposing its key.
 
     ``api_key=None`` preserves an existing key, allowing a local web UI to
     show only a redacted configured state. An explicitly empty string clears
-    the value through :func:`persist_current`'s normal semantics.
+    the value through :func:`persist_current`'s normal semantics. Likewise,
+    ``extra_headers=None`` preserves the stored custom model headers while an
+    empty mapping clears them.
     """
     cleaned_model = model.strip()
     if not cleaned_model:
         raise ValueError("model cannot be empty")
+    # Validate headers before mutating the environment so a rejected header
+    # does not leave the other connection fields half-applied.
+    normalized_headers = (
+        normalize_extra_headers(extra_headers) if extra_headers is not None else None
+    )
     os.environ["STRIX_LLM"] = cleaned_model
     if api_key is not None:
         os.environ["LLM_API_KEY"] = api_key.strip()
@@ -129,9 +142,52 @@ def save_llm_connection(
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
         os.environ["STRIX_LLM_MAX_RETRIES"] = str(max_retries)
+    if normalized_headers is not None:
+        # ``{}`` is the explicit "clear" value: it persists as an empty JSON
+        # object, which resolves back to ``{}`` (falsy) rather than a missing
+        # field, so a later scan sends no custom headers.
+        os.environ["LLM_EXTRA_HEADERS"] = json.dumps(normalized_headers, separators=(",", ":"))
     global _cached  # noqa: PLW0603
     _cached = None
     persist_current()
+
+
+def normalize_extra_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Validate custom model request headers and return a clean mapping.
+
+    Header names must be RFC 7230 tokens and are compared case-insensitively
+    (the HTTP field-name rules); values may not contain CR, LF or NUL so a
+    saved header can never inject additional lines into a model request.
+    """
+    if not isinstance(headers, Mapping):
+        raise TypeError("extra_headers must be a mapping of header names to values")
+    normalized: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for raw_name, raw_value in headers.items():
+        if not isinstance(raw_name, str):
+            raise TypeError("header names must be strings")
+        name = raw_name.strip()
+        if not name:
+            raise ValueError("header names cannot be empty")
+        if not _HEADER_NAME_RE.fullmatch(name):
+            raise ValueError(f"invalid header name: {name!r}")
+        folded = name.casefold()
+        if folded in seen:
+            raise ValueError(f"duplicate header name (case-insensitive): {name!r}")
+        if not isinstance(raw_value, str):
+            raise TypeError(f"header {name!r} value must be a string")
+        value = raw_value.strip()
+        if "\r" in value or "\n" in value or "\x00" in value:
+            raise ValueError(f"header {name!r} value must not contain control characters")
+        if len(value) > _MAX_HEADER_VALUE_CHARS:
+            raise ValueError(
+                f"header {name!r} value is longer than {_MAX_HEADER_VALUE_CHARS} characters"
+            )
+        if not value:
+            raise ValueError(f"header {name!r} value cannot be empty")
+        seen[folded] = name
+        normalized[name] = value
+    return normalized
 
 
 def save_web_search_settings(
@@ -168,6 +224,31 @@ def _aliases_for(finfo: FieldInfo) -> list[str]:
     return aliases
 
 
+def _is_structured_annotation(annotation: Any) -> bool:
+    """Whether a settings field expects a dict/list rather than a scalar."""
+    origin = get_origin(annotation)
+    if origin in (dict, list):
+        return True
+    if origin in (types.UnionType, Union):
+        return any(_is_structured_annotation(arg) for arg in get_args(annotation))
+    return annotation in (dict, list)
+
+
+def _decode_persisted_value(annotation: Any, value: Any) -> Any:
+    """Decode a JSON object/array persisted as an env-style string.
+
+    The JSON file stores every value as a string, which pydantic coerces for
+    scalars but not for ``dict``/``list`` fields (for example
+    ``LLM_EXTRA_HEADERS``). Parse those back before they reach the model.
+    """
+    if not isinstance(value, str) or not _is_structured_annotation(annotation):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def _read_json_overrides(path: Path) -> dict[str, dict[str, Any]]:
     """Read ``{"env": {...}}`` from ``path`` and remap to nested kwargs.
 
@@ -191,7 +272,9 @@ def _read_json_overrides(path: Path) -> dict[str, dict[str, Any]]:
                 continue  # env wins under some alias; skip the JSON file for this field
             for alias in aliases:
                 if alias in env_block_upper:
-                    sub_data[fname] = env_block_upper[alias]
+                    sub_data[fname] = _decode_persisted_value(
+                        finfo.annotation, env_block_upper[alias]
+                    )
                     break
         if sub_data:
             nested[sub_name] = sub_data

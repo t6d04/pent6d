@@ -348,6 +348,16 @@ def _do_finish(  # noqa: PLR0911
             recommendations=recommendations.strip(),
         )
         vuln_count = len(report_state.vulnerability_reports)
+        try:
+            from strix.tools.chaining.tools import creative_scorecard
+
+            scorecard = creative_scorecard(agent_graph)
+            report_state.run_record["creative_scorecard"] = scorecard
+            report_state.save_run_data()
+        except Exception:
+            # The scorecard is reporting metadata; it must never block a finish.
+            logger.exception("creative scorecard failed; completing without it")
+            scorecard = {"success": False, "error": "scorecard unavailable"}
     except (ImportError, AttributeError) as e:
         logger.exception("finish_scan persistence failed")
         return {"success": False, "error": f"Failed to complete scan: {e!s}"}
@@ -361,6 +371,7 @@ def _do_finish(  # noqa: PLR0911
             "scan_completed": True,
             "message": "Scan completed successfully",
             "vulnerabilities_found": vuln_count,
+            "creative_scorecard": scorecard,
         }
         result.update(coverage_summary)
         result["chain_review"] = chain_status
@@ -709,9 +720,12 @@ async def finish_scan(  # noqa: PLR0911, PLR0912
         )
 
     if inner.get("validation_enabled") and inner.get("attack_graph"):
-        graph = inner["attack_graph"]
-        if hasattr(graph, "completion_gate"):
-            graph_gate = await graph.completion_gate()
+        # Keep the coordinator snapshot in ``graph``: the reporting gates below
+        # read it as a mapping. Reusing the name for the AttackGraph object made
+        # ``_do_finish`` call ``.get`` on it whenever coverage existed.
+        attack_graph = inner["attack_graph"]
+        if hasattr(attack_graph, "completion_gate"):
+            graph_gate = await attack_graph.completion_gate()
             if not graph_gate.get("success"):
                 return json.dumps(
                     {

@@ -27,10 +27,13 @@ The token is exchanged for an HttpOnly local session cookie before the browser
 can read run data or issue scan-control commands.
 
 The model form saves only to Strix's local configuration file. Existing API
-keys are never returned to the browser; the UI only displays whether a key is
-configured. Each run starts as an isolated local worker and appears in the
-same run list, so starting another run does not replace the current viewer or
-interrupt an earlier one. The scan itself still requires Docker, and targets
+keys and custom model request header values are never returned to the browser;
+the UI only displays whether a key is configured and the names of the saved
+headers. Saved headers are sent on every model request, including the preflight
+connection check, which is useful for gateways that require tenant or
+attribution headers. Each run starts as an isolated local worker and appears in
+the same run list, so starting another run does not replace the current viewer
+or interrupt an earlier one. The scan itself still requires Docker, and targets
 must be systems you are authorized to assess.
 
 `strix view` remains available for report-only viewing of an existing run.

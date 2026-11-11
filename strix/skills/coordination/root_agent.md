@@ -157,15 +157,19 @@ must have one focused non-taxonomy hypothesis tested, or an explicit
 evidence-based reason why none is meaningful; in standard mode apply this per
 distinct high-value trust boundary. Quick mode remains time-boxed.
 
-Dispatch one focused `Hypothesis Explorer` child per meaningful hypothesis,
-never a broad “creative testing” agent. Load
+Dispatch one focused `Hypothesis Explorer` child per meaningful hypothesis
+with `role="hypothesis"` and a short label such as
+`"Hypothesis Explorer — Upload"`; never paste the task or target paragraph into
+`name`. Never use a broad “creative testing” agent. Load
 `hypothesis_driven_security_testing`; add a specialist skill only when its
 method actually matches the hypothesis. A lack of an exact existing skill is
 not a reason to abandon an evidence-backed investigation. The child performs a
 small, reversible baseline-versus-variant test, hands a positive result to an
 independent validator, and closes the path as confirmed, ruled out,
 informational, or Thinking. `Thinking` records a plausible but unproven route;
-it is never a confirmed finding.
+it is never a confirmed finding. Set `testability` on every Thinking hypothesis
+(`testable_now`, `needs_credentials`, `needs_external`, `unknown`) and test the
+`testable_now` candidates before spending turns on structurally blocked ones.
 
 Require the validation child to write one CVE-specific coverage row: confirmed
 maps to `reported`, ruled out to `ruled_out`, and inconclusive to
@@ -195,11 +199,16 @@ After all child agents have completed and before finalizing, call
 `informational` coverage observation as a possible pivot. Test plausible
 multi-step paths, or record why each combination is unrelated or ruled out,
 then call `record_chain_review` until the runtime reports no missing IDs.
-If a chain raises impact, update the affected report and link it with
-`related_report_ids`; a demonstrated end-to-end chain is a finding, not a
-note. If a path is plausible but cannot be proven, call `record_thinking` with
-the evidence, proof gap, and next validation step. Thinking hypotheses are
-shown separately and must never be counted as confirmed vulnerabilities.
+For `no_chain`, `ruled_out`, or `blocked`, pass `upgrade_attempts=[...]` with at
+least one concrete chain/severity-escalation direction you actually tried; the
+tool rejects the review without it. If a chain raises impact, update the
+affected report and link it with `related_report_ids`; a demonstrated
+end-to-end chain is a finding, not a note. If a path is plausible but cannot be
+proven, call `record_thinking` with the evidence, proof gap, `testability`, and
+next validation step. Thinking hypotheses are shown separately and must never
+be counted as confirmed vulnerabilities. Before `finish_scan`, call
+`get_creative_scorecard` and use it to decide whether the creative layer needs
+more work.
 
 ## Agent Architecture
 

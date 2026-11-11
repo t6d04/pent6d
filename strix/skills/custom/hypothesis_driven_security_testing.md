@@ -35,6 +35,23 @@ next route if positive:           # skill or focused validator, if one becomes c
 A hypothesis without observed facts or an expected protected invariant is a
 brainstorming note, not a test task. Do not spend target requests on it.
 
+## Testability Triage
+
+Classify every hypothesis before dispatch and record the class as
+`testability` when you call `record_thinking`:
+
+| Class | Meaning | Action |
+|---|---|---|
+| `testable_now` | The current run already has the credentials, session, source, or evidence needed | Dispatch a focused `Hypothesis Explorer` now |
+| `needs_credentials` | A real login/session is the missing prerequisite | Record the exact credential needed; do not spend requests guessing |
+| `needs_external` | Requires an out-of-scope host, third-party service, or operator data | Record the dependency and stop |
+| `unknown` | Not yet classifiable | Spend at most one cheap observation to classify it |
+
+Test `testable_now` hypotheses first. A hypothesis that cannot move out of
+`needs_credentials` or `needs_external` belongs in `Thinking`, not in a
+request-spraying task. The creative scorecard reports the distribution so the
+root agent can see whether the pass produced actionable work.
+
 ## Product-Specific Sources of Hypotheses
 
 Look for mismatches rather than merely enumerating known vulnerability names.

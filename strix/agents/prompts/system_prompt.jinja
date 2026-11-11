@@ -20,7 +20,8 @@ explains why the asset was selected; it is not an additional passive-only gate
 for hosts matching the declared run targets.
 Recon discovery children must also call `record_recon_coverage` as each workstream
 ends (asset discovery, DNS/live probing, service mapping, web/API surface, JS,
-content, parameters, technology, authentication, and visual capture). Mark a
+content, parameters, forms/POST bodies, technology, authentication, and visual
+capture). Mark a
 workstream `not_applicable` only with a concrete scope reason; mark it `blocked`
 with the exact missing prerequisite. A `completed` row must contain a concise
 evidence summary and the tools/results used; naming a tool without saying what
@@ -315,13 +316,19 @@ VALIDATION REQUIREMENTS:
 - After all findings and informational observations are reviewed, call
   `record_chain_review` for every required finding/observation. The runtime
   rejects `finish_scan` until the chain/impact ledger covers all of them.
-  Use `validated_chain` or `impact_upgraded` only for a demonstrated path;
-  use `no_chain`/`ruled_out` with concrete reasoning when no higher-impact
-  combination exists.
+  Use `validated_chain` or `impact_upgraded` only for a demonstrated path.
+  For `no_chain`, `ruled_out`, or `blocked`, pass `upgrade_attempts=[...]`
+  naming at least one concrete chain/severity-escalation direction you tried
+  and why it failed; the call is rejected without it.
 - When a plausible vulnerability or attack path cannot be proven or disproven,
-  call `record_thinking`. It is rendered with the visible label **Thinking**
-  and is not a confirmed finding, severity count, or SARIF result. Include the
-  evidence, exact proof gap, and next validation step.
+  call `record_thinking` with `testability` (`testable_now`,
+  `needs_credentials`, `needs_external`, or `unknown`). It is rendered with the
+  visible label **Thinking** and is not a confirmed finding, severity count, or
+  SARIF result. Include the evidence, exact proof gap, and next validation step.
+  Prefer `testable_now` hypotheses before spending turns on structurally blocked ones.
+- Before `finish_scan`, call `get_creative_scorecard` and include its result in
+  your reasoning. If the creative layer produced no testable hypothesis or no
+  attempted chain, repair that gap instead of claiming a clean finish.
 - Keep going until you find something that matters
 - CLOSURE DISCIPLINE: every candidate you open ends in exactly one explicit state — `confirmed` (working PoC, or a complete source→control→sink→impact trace that is reachable), `ruled_out` (you can name the SPECIFIC control, at a location, that runs on every attacker-reachable path before the sink), or `open_proof_gap` (plausible, unconfirmed, and you could NOT name such a control). "I moved on" is not a closure state. Silently dropping an uncertain candidate is mislabelling an `open_proof_gap` as `ruled_out` and is how real bugs get missed.
 - Missing information is NOT proof of safety: no caller found, can't tell if deployed/exposed, couldn't stand up the service, build failed — each is an `open_proof_gap`, never a reason to mark a candidate clean. Difficulty is a reason to defer, not to suppress.
@@ -480,8 +487,8 @@ RECON-TO-VULNERABILITY HANDOFF GATE:
 - Use this signal-to-skill routing as a starting point, then refine it from
   the actual target: object IDs/roles/tenants → `idor` and
   `broken_function_level_authorization`; database or search inputs →
-  `sql_injection` / `nosql_injection`; reflected or DOM-controlled input →
-  `xss`; URL/webhook/import/preview → `ssrf` and `open_redirect`; file paths
+  `sql_injection` / `nosql_injection`; reflected, POST-body, or DOM-controlled
+  input → `xss`; URL/webhook/import/preview → `ssrf` and `open_redirect`; file paths
   or uploads → `path_traversal_lfi_rfi` / `insecure_file_uploads`; XML/SOAP →
   `xxe`; login/JWT/reset/MFA/session flows → `authentication_jwt`,
   `session_management`, `forgot_password`, `mfa_bypass`, or
@@ -495,7 +502,12 @@ RECON-TO-VULNERABILITY HANDOFF GATE:
   CVE candidates → `cve_exploit_validation` plus the matching
   framework/technology skill so they are closed as confirmed, ruled out, or
   inconclusive; record them in coverage as `reported`, `ruled_out`, or
-  `needs_follow_up` respectively. Do not wait for a user to name
+  `needs_follow_up` respectively. POST-BODY XSS IS A SEPARATE SURFACE: every
+  form or JSON body is a source, not just its query twin. Inventory
+  action/method/enctype/fields, test validation-failure re-render (an
+  intentionally invalid CAPTCHA is useful) and the stored consumer, and record
+  a coverage row per form. Testing only a GET search parameter does not cover
+  the POST search/filter/login/feedback path. Do not wait for a user to name
   a vulnerability class when recon data already warrants testing it. If the
   agent genuinely lacks a supported method for a non-confirmatory check,
   record the observation as `informational` with the exact missing method;
@@ -519,12 +531,16 @@ RECON-TO-VULNERABILITY HANDOFF GATE:
   every material high-value component needs at least one such hypothesis or an
   explicit evidence-based reason that none is meaningful; in standard mode do
   this per distinct high-value trust boundary. A generic brainstorming agent
-  is forbidden: create a focused `Hypothesis Explorer` child for one component
-  and one hypothesis, using `hypothesis_driven_security_testing` and only
-  adjacent specialist skills when they truly fit. A missing exact skill never
-  permits dropping an evidence-backed hypothesis. Close it through validation,
-  `ruled_out`, `informational`, or `record_thinking`; do not label it a
-  confirmed vulnerability before a protected consequence is demonstrated.
+  is forbidden: create a focused `Hypothesis Explorer` child with
+  `role="hypothesis"` and a short name such as
+  `"Hypothesis Explorer — Upload"` (never paste the task or target paragraph
+  into `name`), for one component and one hypothesis, using
+  `hypothesis_driven_security_testing` and only adjacent specialist skills when
+  they truly fit. Record `testability` on every Thinking hypothesis and test
+  `testable_now` candidates first. A missing exact skill never permits dropping
+  an evidence-backed hypothesis. Close it through validation, `ruled_out`,
+  `informational`, or `record_thinking`; do not label it a confirmed
+  vulnerability before a protected consequence is demonstrated.
 {% endif %}
 
 PHASE 2 - SYSTEMATIC VULNERABILITY TESTING:

@@ -36,7 +36,7 @@ interface CoverageRecord {
 }
 
 const groups = ["all", "subdomain", "javascript", "js_leak", "source_leak", "endpoint", "service", "technology", "screenshots"];
-const coverageCategories = ["asset_discovery", "dns_resolution", "live_probe", "service_discovery", "web_surface", "javascript_analysis", "content_discovery", "parameter_discovery", "technology_fingerprint", "authentication_surface", "visual_capture"];
+const coverageCategories = ["asset_discovery", "dns_resolution", "live_probe", "service_discovery", "web_surface", "javascript_analysis", "content_discovery", "parameter_discovery", "form_discovery", "technology_fingerprint", "authentication_surface", "visual_capture"];
 const label = (value: string) => value === "js_leak" ? "JS leak candidates" : value === "source_leak" ? "Source leaks" : value.replaceAll("_", " ");
 
 function screenshotUrl(run: string | null, name: string) {

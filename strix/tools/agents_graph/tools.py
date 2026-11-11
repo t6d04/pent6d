@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -29,12 +30,24 @@ _AGENT_ROLES: frozenset[str] = frozenset(
         "recon",
         "source_mapper",
         "specialist",
+        "hypothesis",
         "validator",
         "reflection",
         "gap_closer",
         "chain_reviewer",
     }
 )
+_AGENT_NAME_MAX_CHARS = 80
+_ROLE_DISPLAY_NAMES: dict[str, str] = {
+    "recon": "Recon",
+    "source_mapper": "Source Mapper",
+    "specialist": "Specialist",
+    "hypothesis": "Hypothesis Explorer",
+    "validator": "Validator",
+    "reflection": "Reflection",
+    "gap_closer": "Gap Closer",
+    "chain_reviewer": "Chain Reviewer",
+}
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +62,8 @@ def _normalize_agent_role(  # noqa: PLR0911
 ) -> str:
     """Normalize explicit role metadata, with a conservative legacy fallback."""
     value = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"hypothesis_explorer", "creative", "creative_hypothesis"}:
+        return "hypothesis"
     if value in _AGENT_ROLES:
         return value
     if "source" in value or any("source" in skill.lower() for skill in skills):
@@ -56,6 +71,8 @@ def _normalize_agent_role(  # noqa: PLR0911
     haystack = f"{name} {' '.join(skills)}".lower()
     if re.search(r"\b(recon|reconnaissance|asset[_ -]?discovery|mapping)\b", haystack):
         return "recon"
+    if re.search(r"\b(hypothes|hypothesis|creative|explorer)\b", haystack):
+        return "hypothesis"
     if re.search(r"\b(chain|impact)\b", haystack):
         return "chain_reviewer"
     if re.search(r"\b(validate|validation|verif|independent)\b", haystack):
@@ -63,6 +80,26 @@ def _normalize_agent_role(  # noqa: PLR0911
     if re.search(r"\b(gap|follow[_ -]?up|closure)\b", haystack):
         return "gap_closer"
     return "specialist"
+
+
+def _short_agent_name(raw: str, *, role: str, component: str, risk_area: str) -> str:
+    """Keep graph labels readable even when the model passes its whole prompt.
+
+    A dispatch ``name`` is a UI label, not another copy of the task. Long names
+    make the workflow graph and agent picker unreadable, so fall back to the
+    role plus the bounded component/risk area the caller already supplied.
+    """
+    name = re.sub(r"\s+", " ", (raw or "").strip())
+    if name and len(name) <= _AGENT_NAME_MAX_CHARS:
+        return name
+    label = _ROLE_DISPLAY_NAMES.get(role, "Specialist")
+    focus = (component or risk_area).strip()
+    if focus:
+        return f"{label}: {focus[:60]}"
+    if name:
+        digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:4]
+        return f"{label} {digest}"
+    return label
 
 
 def _derived_dispatch_key(
@@ -591,9 +628,11 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
 
     **Dispatch metadata (required for new scans):**
 
-    - ``role``: ``recon``, ``source_mapper``, ``specialist``, ``validator``,
-      ``reflection``, ``gap_closer``, or ``chain_reviewer``.  If omitted, Strix infers a
-      conservative role from the name and skills for backwards compatibility.
+    - ``role``: ``recon``, ``source_mapper``, ``specialist``, ``hypothesis``,
+      ``validator``, ``reflection``, ``gap_closer``, or ``chain_reviewer``.
+      ``hypothesis`` is the focused Hypothesis Explorer role. If omitted, Strix
+      infers a conservative role from the name and skills for backwards
+      compatibility.
     - ``component`` and ``risk_area`` identify the bounded responsibility.
     - ``phase`` is ``discovery``, ``testing``, ``validation``, or
       ``impact_review``.
@@ -606,8 +645,10 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
       child with the same key is not spawned again.
 
     Args:
-        name: Human-readable child name (used in graph views and
-            ``send_message_to_agent`` flows).
+        name: Short human-readable child label (used in graph views and
+            ``send_message_to_agent`` flows), e.g. ``"Hypothesis Explorer — Upload"``.
+            Do not paste the task or target paragraph here; overlong names are
+            reduced to the role plus component/risk area.
         task: Specific objective. Be concrete — what to test, what
             success looks like, any constraints. Name the target the
             child should call ``get_threat_model`` on, and any shared
@@ -680,6 +721,9 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
         risk_area=risk_value,
         phase=phase_value,
         task=task,
+    )
+    name = _short_agent_name(
+        name, role=role_value, component=component_value, risk_area=risk_value
     )
 
     scan_mode = str(inner.get("scan_mode") or "").strip().lower()

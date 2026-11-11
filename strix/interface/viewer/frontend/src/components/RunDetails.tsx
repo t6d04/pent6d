@@ -136,6 +136,15 @@ export function RunDetails({
   const cost = num(usage.cost);
   const subscription = str(raw.auth_mode) === "subscription";
 
+  // Creative hypothesis/chain scorecard, persisted by finish_scan.
+  const scorecard = rec(raw.creative_scorecard);
+  const hasCreative = Object.keys(scorecard).length > 0 && scorecard.success !== false;
+  const hypotheses = rec(scorecard.hypotheses);
+  const chains = rec(scorecard.chain_reviews);
+  const creativeFindings = rec(scorecard.findings);
+  const testability = rec(hypotheses.by_testability);
+  const chainOutcomes = rec(chains.by_outcome);
+
   const sub = (n: number, word: string) => (
     <span className="text-[#666]"> ({formatNumber(n)} {word})</span>
   );
@@ -274,6 +283,51 @@ export function RunDetails({
             <p className="text-sm text-[#666]">Not available yet.</p>
           )}
         </section>
+
+        {hasCreative && (
+          <section className="md:col-span-2">
+            <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-[#555]">
+              Creative pass
+            </h3>
+            <dl className="grid gap-2.5 sm:grid-cols-2">
+              <Field label="Hypotheses">
+                {formatNumber(num(hypotheses.total) ?? 0)}
+                {num(testability.testable_now) != null && (
+                  <span className="text-[#666]">
+                    {" "}({formatNumber(num(testability.testable_now) ?? 0)} testable now)
+                  </span>
+                )}
+              </Field>
+              <Field label="Chain reviews">
+                {formatNumber(num(chains.total) ?? 0)}
+                {num(chains.upgrade_attempts) != null && (
+                  <span className="text-[#666]">
+                    {" "}({formatNumber(num(chains.upgrade_attempts) ?? 0)} upgrade attempts)
+                  </span>
+                )}
+              </Field>
+              <Field label="Chains validated">
+                {formatNumber(num(chains.validated_chain) ?? 0)}
+              </Field>
+              <Field label="Impact upgraded">
+                {formatNumber(num(chains.impact_upgraded) ?? 0)}
+              </Field>
+              <Field label="Creative findings">
+                {formatNumber(num(creativeFindings.created_by_creative) ?? 0)}
+                <span className="text-[#666]">
+                  {" "}of {formatNumber(num(creativeFindings.total) ?? 0)}
+                </span>
+              </Field>
+              <Field label="Chain outcomes">
+                {Object.keys(chainOutcomes).length > 0
+                  ? Object.entries(chainOutcomes)
+                      .map(([outcome, count]) => `${humanize(outcome)}: ${formatNumber(num(count) ?? 0)}`)
+                      .join(" · ")
+                  : "None"}
+              </Field>
+            </dl>
+          </section>
+        )}
       </div>
       )}
     </div>

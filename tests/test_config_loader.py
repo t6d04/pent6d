@@ -29,6 +29,10 @@ _LLM_ENV_KEYS = [
     "STRIX_REASONING_EFFORT",
     "STRIX_FORCE_REQUIRED_TOOL_CHOICE",
     "LLM_TIMEOUT",
+    "LLM_EXTRA_HEADERS",
+    "STRIX_LLM_MAX_RETRIES",
+    "STRIX_LLM_RATE_LIMIT_REQUESTS",
+    "STRIX_LLM_RATE_LIMIT_UNIT",
     "PERPLEXITY_API_KEY",
     "EXA_API_KEY",
     "STRIX_WEB_SEARCH_PROVIDER",
@@ -131,6 +135,48 @@ def test_read_json_overrides_uses_json_when_no_alias_in_environ(tmp_path: Path) 
     path = tmp_path / "cli-config.json"
     path.write_text(json.dumps({"env": {"OPENAI_API_KEY": "sk-file"}}), encoding="utf-8")
     assert loader._read_json_overrides(path) == {"llm": {"api_key": "sk-file"}}
+
+
+def test_read_json_overrides_decodes_structured_values(tmp_path: Path) -> None:
+    """A dict field persisted as a JSON string must reach the model as a dict."""
+    path = tmp_path / "cli-config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "STRIX_LLM": "openai/gpt-5",
+                    "LLM_EXTRA_HEADERS": json.dumps({"X-Tenant": "acme"}),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert loader._read_json_overrides(path) == {
+        "llm": {"model": "openai/gpt-5", "extra_headers": {"X-Tenant": "acme"}},
+    }
+
+
+def test_read_json_overrides_keeps_corrupt_structured_values_visible(tmp_path: Path) -> None:
+    path = tmp_path / "cli-config.json"
+    path.write_text(
+        json.dumps({"env": {"LLM_EXTRA_HEADERS": "{not valid json"}}),
+        encoding="utf-8",
+    )
+    assert loader._read_json_overrides(path) == {"llm": {"extra_headers": "{not valid json"}}
+
+
+def test_normalize_extra_headers_validates_name_and_value() -> None:
+    assert loader.normalize_extra_headers({"X-Tenant": "acme"}) == {"X-Tenant": "acme"}
+    assert loader.normalize_extra_headers({}) == {}
+
+    with pytest.raises(ValueError, match="invalid header name"):
+        loader.normalize_extra_headers({"X Tenant": "acme"})
+    with pytest.raises(ValueError, match="control characters"):
+        loader.normalize_extra_headers({"X-Tenant": "acme\r\nX-Injected: 1"})
+    with pytest.raises(ValueError, match="cannot be empty"):
+        loader.normalize_extra_headers({"X-Tenant": "  "})
+    with pytest.raises(ValueError, match="case-insensitive"):
+        loader.normalize_extra_headers({"X-Tenant": "one", "x-tenant": "two"})
 
 
 def test_tool_output_max_bytes_rejects_sub_notice_values() -> None:

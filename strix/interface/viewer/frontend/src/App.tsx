@@ -351,7 +351,7 @@ function ViewerApp({
     webControl &&
       activeRun &&
       run?.finished &&
-      run.summary.status?.toLowerCase() === "interrupted" &&
+      ["interrupted", "failed"].includes(run.summary.status?.toLowerCase() ?? "") &&
       !webControl.state.workers.some(
         (worker) => worker.run_name === activeRun && worker.state !== "exited"
       )

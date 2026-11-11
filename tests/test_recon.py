@@ -42,6 +42,56 @@ def test_inventory_survives_restart_updates_and_isolates_runs(tmp_path: Path) ->
     assert read_recon(tmp_path / "two")["entries"] == []
 
 
+def test_post_form_observation_retains_body_metadata(tmp_path: Path) -> None:
+    _save(
+        tmp_path,
+        [
+            ReconObservation(
+                kind="endpoint",
+                value="https://example.test/hoi-dap",
+                source="form inventory",
+                scope="in_scope",
+                method="POST",
+                content_type="application/x-www-form-urlencoded",
+                parameters=[
+                    "ctrl_419845_1202$txtQuestionTitle",
+                    "ctrl_419845_1202$txtVerifierValue",
+                ],
+            ).model_dump(),
+        ],
+        "recon",
+    )
+
+    entry = read_recon(tmp_path)["entries"][0]
+    assert entry["method"] == "POST"
+    assert entry["content_type"] == "application/x-www-form-urlencoded"
+    assert entry["parameters"] == [
+        "ctrl_419845_1202$txtQuestionTitle",
+        "ctrl_419845_1202$txtVerifierValue",
+    ]
+
+    # A later sparse observation of the same endpoint must not erase the form
+    # inventory that a POST-XSS specialist needs.
+    _save(
+        tmp_path,
+        [
+            ReconObservation(
+                kind="endpoint",
+                value="https://example.test/hoi-dap",
+                source="live recheck",
+                method="POST",
+            ).model_dump(),
+        ],
+        "recon",
+    )
+    entry = read_recon(tmp_path)["entries"][0]
+    assert entry["content_type"] == "application/x-www-form-urlencoded"
+    assert entry["parameters"] == [
+        "ctrl_419845_1202$txtQuestionTitle",
+        "ctrl_419845_1202$txtVerifierValue",
+    ]
+
+
 def test_alive_is_service_state_and_projects_to_passive_host_record(tmp_path: Path) -> None:
     _save(
         tmp_path,
@@ -259,6 +309,7 @@ def test_required_coverage_is_target_aware() -> None:
     web = _required_coverage(scan_mode="deep", target_types=["web_application"])
     assert "web_surface" in web
     assert "javascript_analysis" in web
+    assert "form_discovery" in web
     assert "visual_capture" in web
 
     ip = _required_coverage(scan_mode="standard", target_types=["ip_address"])

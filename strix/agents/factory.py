@@ -31,6 +31,7 @@ from strix.tools.agents_graph.tools import (
 from strix.tools.attack_graph import create_attack_task, list_attack_tasks, update_attack_task
 from strix.tools.chaining.tools import (
     get_chain_review_status,
+    get_creative_scorecard,
     list_thinking,
     record_chain_review,
     record_thinking,
@@ -661,6 +662,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     list_coverage,
     record_chain_review,
     get_chain_review_status,
+    get_creative_scorecard,
     record_thinking,
     list_thinking,
     get_threat_model,
@@ -730,6 +732,7 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     list_coverage,
     record_chain_review,
     get_chain_review_status,
+    get_creative_scorecard,
     record_thinking,
     list_thinking,
     get_threat_model,

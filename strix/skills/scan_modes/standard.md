@@ -58,10 +58,11 @@ each distinct high-value trust boundary. Skills are useful methods, not an
 exhaustive list of possible application failures. Compare the expected
 invariant with observed behavior across UI/API/legacy/async paths, roles,
 representations, and workflow transitions. Use
-`hypothesis_driven_security_testing` for a focused child when no existing
-vulnerability family describes the suspected mismatch. Keep the test bounded,
-reversible, and baseline-driven; a plausible but unproven result is Thinking,
-not a finding.
+`hypothesis_driven_security_testing` for a focused `Hypothesis Explorer` child
+with `role="hypothesis"` and a short name when no existing vulnerability family
+describes the suspected mismatch. Set `testability` on every Thinking record
+and test `testable_now` hypotheses first. Keep the test bounded, reversible, and
+baseline-driven; a plausible but unproven result is Thinking, not a finding.
 
 **Input Validation**
 - Injection testing on all input fields (SQL, XSS, command, template)

@@ -7,7 +7,24 @@ import json
 
 import pytest
 
+from strix.config import loader
 from strix.interface.web import WebRuntime, parse_web_arguments
+
+
+def _clear_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start from a clean LLM connection and register teardown for every key.
+
+    ``monkeypatch.delenv`` does not record an undo entry for an already-missing
+    variable, so a value written by the code under test would leak into the
+    next test. Setting a valid empty value always registers the restore.
+    """
+    monkeypatch.setenv("STRIX_LLM", "")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_API_BASE", "")
+    monkeypatch.setenv("LLM_EXTRA_HEADERS", "{}")
+    monkeypatch.setenv("STRIX_LLM_MAX_RETRIES", "5")
+    monkeypatch.setenv("STRIX_LLM_RATE_LIMIT_REQUESTS", "0")
+    monkeypatch.setenv("STRIX_LLM_RATE_LIMIT_UNIT", "minutes")
 
 
 def test_web_arguments_include_fresh_interactive_run_fields() -> None:
@@ -102,9 +119,7 @@ def test_web_migrates_finished_project_runs_from_legacy_global_storage(
     assert runtime.web_state()["state"]["projects"][0]["isolated_storage"] is True
 
 
-def test_web_hub_can_stop_its_own_active_worker(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_web_hub_can_stop_its_own_active_worker(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     args, _ = parse_web_arguments(["--target", "https://example.test"])
     runtime = WebRuntime(args)
@@ -312,3 +327,206 @@ async def test_web_hub_resumes_an_interrupted_run(
         "--max-turns",
         str(runtime.max_turns),
     ]
+
+
+@pytest.mark.asyncio
+async def test_web_hub_resumes_a_failed_run(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider-side failure must not force the operator to start over."""
+    monkeypatch.chdir(tmp_path)
+    args, _ = parse_web_arguments(["--target", "https://example.test"])
+    runtime = WebRuntime(args)
+    runtime._loop = asyncio.get_running_loop()
+    project = runtime._active_project()
+    assert project is not None
+    run_name = "example-test_failed"
+    project["run_names"].append(run_name)
+    run_dir = runtime._project_runs_dir(project) / run_name
+    state_dir = run_dir / ".state"
+    state_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text('{"status": "failed"}', encoding="utf-8")
+    (state_dir / "agents.json").write_text("{}", encoding="utf-8")
+    (state_dir / "agents.db").write_bytes(b"session")
+
+    async def verified(_model: str) -> None:
+        return None
+
+    launched: list[list[str]] = []
+
+    class Process:
+        pid = 2028
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def spawn(command, **_kwargs):
+        launched.append(command)
+        return Process()
+
+    monkeypatch.setattr("strix.interface.web.preflight_model_connection", verified)
+    monkeypatch.setattr("strix.interface.web.subprocess.Popen", spawn)
+    monkeypatch.setenv("STRIX_LLM", "test/model")
+
+    result = await asyncio.to_thread(
+        runtime.web_command,
+        "run.resume",
+        {"run_name": run_name},
+    )
+
+    assert result["started"] is True
+    assert result["pid"] == 2028
+    assert launched[0][1:] == [
+        "-m",
+        "strix.interface.main",
+        "-n",
+        "--resume",
+        run_name,
+        "--max-turns",
+        str(runtime.max_turns),
+    ]
+
+
+def test_web_resume_still_rejects_a_completed_run(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    args, _ = parse_web_arguments(["--target", "https://example.test"])
+    runtime = WebRuntime(args)
+    project = runtime._active_project()
+    assert project is not None
+    run_name = "example-test_completed"
+    project["run_names"].append(run_name)
+    run_dir = runtime._project_runs_dir(project) / run_name
+    state_dir = run_dir / ".state"
+    state_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text('{"status": "completed"}', encoding="utf-8")
+    (state_dir / "agents.json").write_text("{}", encoding="utf-8")
+    (state_dir / "agents.db").write_bytes(b"session")
+
+    with pytest.raises(ValueError, match="interrupted or failed"):
+        runtime.web_command("run.resume", {"run_name": run_name})
+
+
+def test_web_saves_custom_model_headers_without_echoing_values(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Header values stay in the hub; the setup screen only gets names back."""
+    _clear_llm_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "cli-config.json"
+    monkeypatch.setattr(loader, "_override", config_path)
+    monkeypatch.setattr(loader, "_cached", None)
+    args, _ = parse_web_arguments([])
+    runtime = WebRuntime(args)
+
+    saved = runtime.web_command(
+        "settings.save_llm",
+        {
+            "model": "openai/gpt-5",
+            "extra_headers": [
+                {"name": "X-Tenant", "value": "acme"},
+                {"name": "X-Feature-Key", "value": "svc-secret"},
+            ],
+        },
+    )
+
+    assert saved["llm_extra_headers"] == ["X-Feature-Key", "X-Tenant"]
+    state = runtime.web_state()["state"]
+    assert state["llm_extra_headers"] == ["X-Feature-Key", "X-Tenant"]
+    assert "acme" not in json.dumps(state)
+    assert "svc-secret" not in json.dumps(state)
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert json.loads(persisted["env"]["LLM_EXTRA_HEADERS"]) == {
+        "X-Tenant": "acme",
+        "X-Feature-Key": "svc-secret",
+    }
+
+    # A new process reads the same headers back from the JSON file even though
+    # the file stores every value as a string.
+    monkeypatch.delenv("LLM_EXTRA_HEADERS")
+    monkeypatch.delenv("STRIX_LLM")
+    monkeypatch.setattr(loader, "_cached", None)
+    assert loader.load_settings().llm.extra_headers == {
+        "X-Tenant": "acme",
+        "X-Feature-Key": "svc-secret",
+    }
+
+
+def test_web_keeps_stored_header_value_when_the_row_is_blank(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_llm_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(loader, "_override", tmp_path / "cli-config.json")
+    monkeypatch.setattr(loader, "_cached", None)
+    args, _ = parse_web_arguments([])
+    runtime = WebRuntime(args)
+
+    runtime.web_command(
+        "settings.save_llm",
+        {
+            "model": "openai/gpt-5",
+            "extra_headers": [{"name": "X-Tenant", "value": "acme"}],
+        },
+    )
+
+    # A blank value means "keep the stored secret", not "clear the header".
+    saved = runtime.web_command(
+        "settings.save_llm",
+        {
+            "model": "openai/gpt-5",
+            "extra_headers": [{"name": "X-Tenant", "value": ""}],
+        },
+    )
+    assert saved["llm_extra_headers"] == ["X-Tenant"]
+    assert loader.load_settings().llm.extra_headers == {"X-Tenant": "acme"}
+
+    # Dropping the row removes the header entirely.
+    saved = runtime.web_command("settings.save_llm", {"model": "openai/gpt-5", "extra_headers": []})
+    assert saved["llm_extra_headers"] == []
+    assert loader.load_settings().llm.extra_headers == {}
+
+    # A fresh process must decode the persisted JSON string back to a mapping.
+    monkeypatch.delenv("LLM_EXTRA_HEADERS")
+    monkeypatch.delenv("STRIX_LLM")
+    monkeypatch.setattr(loader, "_cached", None)
+    assert loader.load_settings().llm.extra_headers == {}
+
+
+def test_web_rejects_unsafe_custom_model_headers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_llm_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(loader, "_override", tmp_path / "cli-config.json")
+    monkeypatch.setattr(loader, "_cached", None)
+    args, _ = parse_web_arguments([])
+    runtime = WebRuntime(args)
+
+    with pytest.raises(ValueError, match="invalid header name"):
+        runtime.web_command(
+            "settings.save_llm",
+            {
+                "model": "openai/gpt-5",
+                "extra_headers": [{"name": "X Tenant", "value": "acme"}],
+            },
+        )
+
+    with pytest.raises(ValueError, match="needs a value"):
+        runtime.web_command(
+            "settings.save_llm",
+            {
+                "model": "openai/gpt-5",
+                "extra_headers": [{"name": "X-Tenant", "value": ""}],
+            },
+        )
+
+    with pytest.raises(ValueError, match="control characters"):
+        runtime.web_command(
+            "settings.save_llm",
+            {
+                "model": "openai/gpt-5",
+                "extra_headers": [{"name": "X-Tenant", "value": "acme\r\nX-Injected: 1"}],
+            },
+        )

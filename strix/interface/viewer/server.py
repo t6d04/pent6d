@@ -298,6 +298,8 @@ def read_workflow(run_dir: Path) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
             value in hint for value in ("recon", "mapper", "mapping", "discovery")
         ):
             return "recon"
+        if role == "hypothesis" or "hypothesis explorer" in hint:
+            return "execution"
         if role in {"validator", "gap_closer", "verification"} or any(
             value in hint for value in ("validat", "verif", "recovery", "gap-closer")
         ):
@@ -745,6 +747,22 @@ class _ViewerState:
         return self.base_dir
 
 
+_MAX_ERROR_DETAIL_CHARS = 2_000
+
+
+def _internal_error_message(exc: Exception) -> str:
+    """Render an unhandled viewer error for the API response.
+
+    The browser only sees the generic HTTP 500 by default, which hides the
+    actual cause (a failed model preflight, an unreadable run, a command
+    rejection, ...). Include the exception type and message so the operator can
+    act on it, while capping the size and keeping the full traceback in the log.
+    """
+    detail = str(exc).strip()
+    message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+    return message[:_MAX_ERROR_DETAIL_CHARS]
+
+
 def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
     class ViewerHandler(BaseHTTPRequestHandler):
         server_version = f"{PRODUCT_DISPLAY_NAME}Viewer/1.0"
@@ -764,10 +782,13 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                 # The browser closed the connection mid-response (e.g. it
                 # navigated away between polls). Not an error.
                 logger.debug("viewer client disconnected during %s", path)
-            except Exception:
+            except Exception as exc:
                 # A bad request must never kill the worker thread.
                 logger.exception("viewer request failed: %s", path)
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": _internal_error_message(exc)},
+                )
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
@@ -790,10 +811,13 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
             except BrokenPipeError:
                 logger.debug("viewer client disconnected during POST %s", path)
-            except Exception:
+            except Exception as exc:
                 # A bad request must never kill the worker thread.
                 logger.exception("viewer request failed: POST %s", path)
-                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": _internal_error_message(exc)},
+                )
 
         def _read_body(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or 0)
