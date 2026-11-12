@@ -567,6 +567,31 @@ def test_web_control_endpoints_require_a_session_and_dispatch(
         httpd.server_close()
 
 
+def test_web_control_endpoint_returns_explicit_internal_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = _make_run(tmp_path, "web-error", status="running", end_time=None)
+    _bundle(tmp_path, monkeypatch)
+
+    def dispatch(_command: str, _payload: dict[str, object]) -> dict[str, object]:
+        raise OSError("model preflight failed: bad gateway")
+
+    httpd, url, token = serve(run_dir, open_browser=False, web_command_handler=dispatch)
+    try:
+        cookie = _session_cookie(url, token)
+        status, body = _post(
+            url,
+            "/api/web/command",
+            {"command": "setup.start", "payload": {}},
+            cookie=cookie,
+        )
+        assert status == 500
+        assert json.loads(body) == {"error": "OSError: model preflight failed: bad gateway"}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_server_event_endpoint_forwards_cta(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

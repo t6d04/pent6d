@@ -19,14 +19,14 @@ import type { AgentNode } from "@/types/events";
 
 import "@xyflow/react/dist/style.css";
 
-const NODE_WIDTH = 260;
 const NODE_HEIGHT = 80;
 
 const nodeTypes = { agentNode: AgentNodeComponent };
 
 function getLayoutedElements(
   agents: Map<string, AgentNode>,
-  selectedAgentId: string | null
+  selectedAgentId: string | null,
+  nodeWidth: number,
 ) {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -36,7 +36,7 @@ function getLayoutedElements(
   const edges: Edge[] = [];
 
   for (const [id, agent] of agents) {
-    g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    g.setNode(id, { width: nodeWidth, height: NODE_HEIGHT });
     nodes.push({
       id,
       type: "agentNode",
@@ -62,7 +62,7 @@ function getLayoutedElements(
     const pos = g.node(node.id);
     if (pos) {
       node.position = {
-        x: pos.x - NODE_WIDTH / 2,
+        x: pos.x - nodeWidth / 2,
         y: pos.y - NODE_HEIGHT / 2,
       };
     }
@@ -75,7 +75,7 @@ const ZOOM_DURATION = 300;
 
 
 /** Centers viewport on the root node (no parentId) at a fixed zoom — only once on first load */
-function CenterOnRoot({ nodes }: { nodes: Node[] }) {
+function CenterOnRoot({ nodes, nodeWidth }: { nodes: Node[]; nodeWidth: number }) {
   const { setCenter } = useReactFlow();
   const hasCentered = useRef(false);
   useEffect(() => {
@@ -83,11 +83,11 @@ function CenterOnRoot({ nodes }: { nodes: Node[] }) {
       const root = nodes.find((n) => !(n.data as Record<string, unknown>).parentId);
       const target = root ?? nodes[0];
       hasCentered.current = true;
-      const cx = target.position.x + NODE_WIDTH / 2;
+      const cx = target.position.x + nodeWidth / 2;
       const cy = target.position.y + NODE_HEIGHT / 2;
       setTimeout(() => setCenter(cx, cy, { zoom: 0.85, duration: 400 }), 60);
     }
-  }, [nodes, setCenter]);
+  }, [nodeWidth, nodes, setCenter]);
   return null;
 }
 
@@ -133,16 +133,24 @@ export default function AgentGraph({
   eventsEmpty,
   scanCompleted,
 }: AgentGraphProps) {
+  const [nodeWidth, setNodeWidth] = useState(260);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   useEffect(() => {
+    const updateNodeWidth = () => setNodeWidth(Math.round(Math.min(300, Math.max(210, window.innerWidth * 0.18))));
+    updateNodeWidth();
+    window.addEventListener("resize", updateNodeWidth);
+    return () => window.removeEventListener("resize", updateNodeWidth);
+  }, []);
+
+  useEffect(() => {
     if (agents.size === 0) return;
-    const { nodes: ln, edges: le } = getLayoutedElements(agents, selectedAgentId);
+    const { nodes: ln, edges: le } = getLayoutedElements(agents, selectedAgentId, nodeWidth);
     setNodes(ln);
     setEdges(le);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents.size, setNodes, setEdges]);
+  }, [agents.size, nodeWidth, setNodes, setEdges]);
 
   // Sync agent data (status, name, etc.) into existing nodes without re-layout
   useEffect(() => {
@@ -232,7 +240,7 @@ export default function AgentGraph({
       className="bg-black"
     >
       <Background color="#111" gap={20} />
-      <CenterOnRoot nodes={nodes} />
+      <CenterOnRoot nodes={nodes} nodeWidth={nodeWidth} />
       <SmoothControls />
       <MiniMap
         position="bottom-left"

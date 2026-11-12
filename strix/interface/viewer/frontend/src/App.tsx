@@ -78,6 +78,7 @@ function ViewerApp({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("overview");
   const [runs, setRuns] = useState<RunsPayload | null>(null);
+  const [runRevision, setRunRevision] = useState(0);
   // Whether this viewer can steer a live scan (true only inside the in-TUI
   // launcher that shares the running scan's coordinator + event loop).
   const [canSteer, setCanSteer] = useState(false);
@@ -161,7 +162,13 @@ function ViewerApp({
         const { summary, raw, finished } = await fetchRunSummary(activeRun);
         if (cancelled) return;
         setError(null);
-        if (finished && !finishedRef.current) {
+        const workerActive = Boolean(
+          webControl?.state.workers.some(
+            (worker) => worker.run_name === activeRun && worker.state !== "exited"
+          )
+        );
+        if (workerActive) finishedRef.current = false;
+        if (finished && !workerActive && !finishedRef.current) {
           finishedRef.current = true;
           const full = await fetchAll(activeRun);
           if (!cancelled) setRun(full);
@@ -204,7 +211,12 @@ function ViewerApp({
         if (cancelled) return;
         setError(null);
         setRun(full);
-        if (full.finished) {
+        const workerActive = Boolean(
+          webControl?.state.workers.some(
+            (worker) => worker.run_name === activeRun && worker.state !== "exited"
+          )
+        );
+        if (full.finished && !workerActive) {
           finishedRef.current = true;
         } else {
           schedule();
@@ -220,7 +232,7 @@ function ViewerApp({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeRun, webControl]);
+  }, [activeRun, runRevision, webControl]);
 
   const counts = useMemo(
     () => (run ? severityCounts(run.vulnerabilities) : null),
@@ -319,12 +331,29 @@ function ViewerApp({
     await onRefreshWebControl?.();
   }, [activeRun, onRefreshWebControl]);
 
+  const resumeActiveRun = useCallback(async () => {
+    if (!activeRun) throw new Error("Không xác định được run cần tiếp tục.");
+    await webCommand("run.resume", { run_name: activeRun });
+    await onRefreshWebControl?.();
+    setRunRevision((revision) => revision + 1);
+  }, [activeRun, onRefreshWebControl]);
+
   const canStopActiveRun = Boolean(
     webControl &&
       activeRun &&
       !run?.finished &&
       webControl.state.workers.some(
         (worker) => worker.run_name === activeRun && worker.state === "running"
+      )
+  );
+
+  const canResumeActiveRun = Boolean(
+    webControl &&
+      activeRun &&
+      run?.finished &&
+      ["interrupted", "failed"].includes(run.summary.status?.toLowerCase() ?? "") &&
+      !webControl.state.workers.some(
+        (worker) => worker.run_name === activeRun && worker.state !== "exited"
       )
   );
 
@@ -392,7 +421,7 @@ function ViewerApp({
       <div className="flex-1 min-w-0">
         {/* Top bar */}
         <div className="border-b border-[#222]">
-          <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-4 flex items-center gap-1.5">
+          <div className="mx-auto flex w-full max-w-[min(100%,120rem)] items-center gap-1.5 px-[clamp(0.75rem,2.2vw,2.5rem)] py-4">
             <div className="flex items-center gap-1.5 opacity-90 lg:hidden">
               <img src="./logo.png" alt="Pent6d" className="w-10 h-8 object-cover" />
               <div className="text-base text-white font-medium tracking-tight">Pent6d</div>
@@ -424,7 +453,7 @@ function ViewerApp({
           </div>
         </div>
 
-        <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-8 sm:py-12 space-y-6">
+        <div className="mx-auto w-full max-w-[min(100%,120rem)] space-y-6 px-[clamp(0.75rem,2.2vw,2.5rem)] py-[clamp(1.5rem,4vw,3rem)]">
           {error && !run && view !== "history" && !webControl && (
             <div className="rounded-lg px-4 py-3 flex gap-3 items-start border border-red-500/30 bg-red-500/5">
               <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-red-400" aria-hidden="true" />
@@ -519,6 +548,7 @@ function ViewerApp({
                   total={run.vulnerabilities.length}
                   reportMarkdown={run.reportMarkdown}
                   raw={run.raw}
+                  onResume={canResumeActiveRun ? resumeActiveRun : undefined}
                   onStop={canStopActiveRun ? stopActiveRun : undefined}
                   runName={activeRun}
                 />
@@ -587,12 +617,12 @@ function RunSwitcher({
       >
         <History className="h-4 w-4 flex-shrink-0 text-[#888]" aria-hidden="true" />
         <span className="flex-shrink-0 text-[#888]">Pentest</span>
-        <span className="max-w-[260px] truncate font-medium">{current}</span>
+        <span className="max-w-[min(32rem,42vw)] truncate font-medium">{current}</span>
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-[#aaa]" aria-hidden="true" />
       </button>
       {open && (
         <div
-          className="absolute right-0 z-50 mt-2 max-h-96 w-96 overflow-y-auto rounded-xl py-1.5 shadow-2xl"
+          className="absolute right-0 z-50 mt-2 max-h-[min(70vh,32rem)] w-[min(28rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl py-1.5 shadow-2xl"
           style={{ border: "1px solid #3a3a3a", background: "#0a0a0a" }}
         >
           <div className="border-b border-[#222] px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">
@@ -754,6 +784,7 @@ function OverviewTab({
   total,
   reportMarkdown,
   raw,
+  onResume,
   onStop,
   runName,
 }: {
@@ -762,6 +793,7 @@ function OverviewTab({
   total: number;
   reportMarkdown: string | null;
   raw: Record<string, unknown>;
+  onResume?: () => Promise<void>;
   onStop?: () => Promise<void>;
   runName: string | null;
 }) {
@@ -779,7 +811,7 @@ function OverviewTab({
   return (
     <div className="space-y-6">
       <div className="animate-card-in">
-        <RunDetails raw={raw} durationSeconds={summary.durationSeconds} onStop={onStop} />
+        <RunDetails raw={raw} durationSeconds={summary.durationSeconds} onResume={onResume} onStop={onStop} />
       </div>
 
       <div className="animate-card-in rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)] px-5 py-3">
@@ -869,7 +901,7 @@ function AgentsTab({ run, canSteer }: { run: LoadedRun; canSteer: boolean }) {
           <span><i className="mr-1 inline-block w-4 border-t border-orange-400" />impact</span>
           <span><i className="mr-1 inline-block w-4 border-t border-yellow-400" />chain/report</span>
         </div>
-        <div className="h-[480px] rounded-lg border border-[#1a1a1a] overflow-hidden">
+        <div className="h-[clamp(22rem,62vh,48rem)] min-h-[20rem] overflow-hidden rounded-lg border border-[#1a1a1a]">
           <WorkflowGraph
             workflow={run.workflow}
             selectedNodeId={selectedWorkflowId ?? (selectedId ? `agent:${selectedId}` : null)}

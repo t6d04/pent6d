@@ -88,6 +88,21 @@ def test_client_errors_are_not_transient() -> None:
     assert execution._is_transient_model_error(ValueError("nope")) is False
 
 
+def test_provider_model_outage_is_transient() -> None:
+    """Gateways report an unavailable model as 400; replay it instead of dying."""
+    unavailable = BadRequestError(
+        'Error code: 400 - {"error":{"type":"server_error",'
+        '"message":"Upstream request failed: Model is unavailable."}}',
+        response=httpx.Response(400, request=_request()),
+        body=None,
+    )
+    assert execution._is_transient_model_error(unavailable) is True
+
+
+def test_model_outage_wording_outside_api_errors_stays_non_transient() -> None:
+    assert execution._is_transient_model_error(ValueError("Model is unavailable")) is False
+
+
 class _FakeStream:
     def __init__(self, exc: BaseException | None = None) -> None:
         self._exc = exc

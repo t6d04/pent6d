@@ -28,6 +28,23 @@ function responseMessage(event: TranscriptEvent): string | null {
   return typeof message === "string" && message.trim() ? message : null;
 }
 
+/**
+ * Return prose that is addressed to the user from a transcript event.
+ *
+ * ``respond_to_user`` is the explicit pause/yield path, but an interactive
+ * resume can also finish with a normal assistant message (for example when
+ * the model answers and then the worker exits).  The activity view renders
+ * those messages as ``Thinking``; the chat view must promote them to a real
+ * assistant reply as well.
+ */
+function assistantMessage(event: TranscriptEvent): string | null {
+  if (event.type !== "chat") return null;
+  const role = String(event.data.role ?? "assistant").toLowerCase();
+  if (role !== "assistant") return null;
+  const content = event.data.content;
+  return typeof content === "string" && content.trim() ? content : null;
+}
+
 function toolLabel(event: TranscriptEvent | undefined): string | null {
   if (!event || event.type !== "tool") return null;
   const name = typeof event.data.tool_name === "string" ? event.data.tool_name : "tool";
@@ -60,13 +77,38 @@ export default function RunChat({
     [rootAgent, transcript.events]
   );
   const conversation = useMemo<ConversationEntry[]>(
-    () => rootEvents.flatMap<ConversationEntry>((event) => {
-      if (event.type === "chat" && event.data.role === "user" && typeof event.data.content === "string" && event.data.content.trim()) {
-        return [{ id: event.id, timestamp: event.timestamp, role: "user" as const, content: event.data.content }];
+    () => {
+      const entries: ConversationEntry[] = [];
+      for (const event of rootEvents) {
+        if (
+          event.type === "chat" &&
+          event.data.role === "user" &&
+          typeof event.data.content === "string" &&
+          event.data.content.trim()
+        ) {
+          entries.push({ id: event.id, timestamp: event.timestamp, role: "user", content: event.data.content });
+          continue;
+        }
+
+        const assistant = assistantMessage(event);
+        if (assistant) {
+          entries.push({ id: event.id, timestamp: event.timestamp, role: "assistant", content: assistant });
+          continue;
+        }
+
+        const reply = responseMessage(event);
+        if (reply) {
+          // Some model adapters emit the same prose as a normal assistant
+          // message and then call respond_to_user. Keep only one bubble.
+          const previous = entries[entries.length - 1];
+          if (previous?.role === "assistant" && previous.content.trim() === reply.trim()) {
+            continue;
+          }
+          entries.push({ id: event.id, timestamp: event.timestamp, role: "assistant", content: reply });
+        }
       }
-      const reply = responseMessage(event);
-      return reply ? [{ id: event.id, timestamp: event.timestamp, role: "assistant" as const, content: reply }] : [];
-    }).sort((left, right) => left.timestamp.localeCompare(right.timestamp)),
+      return entries.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+    },
     [rootEvents]
   );
   const activeTool = useMemo(
@@ -119,7 +161,7 @@ export default function RunChat({
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="mx-auto w-full max-w-[min(100%,72rem)] space-y-5">
       <div>
         <h1 className="text-2xl font-semibold text-white">Chat with agent</h1>
         <p className="mt-1 text-sm text-[#888]">
@@ -128,7 +170,7 @@ export default function RunChat({
       </div>
 
       <section className="overflow-hidden rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)]">
-        <div className="max-h-[58vh] min-h-72 space-y-4 overflow-y-auto p-4 sm:p-5">
+        <div className="max-h-[min(68vh,52rem)] min-h-[clamp(18rem,35vh,26rem)] space-y-4 overflow-y-auto p-[clamp(0.75rem,2vw,1.25rem)]">
           {conversation.length === 0 && !pendingMessage ? (
             <p className="py-12 text-center text-sm text-[#666]">Chưa có hội thoại tiếp nối cho run này.</p>
           ) : (
@@ -176,7 +218,7 @@ export default function RunChat({
               {working ? "Hoạt động và thinking của agent" : "Xem hoạt động và thinking của agent"}
               {working && <span className="ml-auto h-2 w-2 rounded-full bg-emerald-400 animate-pulse" aria-label="Agent đang chạy" />}
             </summary>
-            <div className="max-h-[42vh] overflow-y-auto border-t border-[#1a1a1a] px-4 py-2">
+            <div className="max-h-[min(55vh,42rem)] overflow-y-auto border-t border-[#1a1a1a] px-[clamp(0.75rem,2vw,1.25rem)] py-2">
               <AgentTranscript agent={rootAgent} events={rootEvents} showHeader={false} />
             </div>
           </details>

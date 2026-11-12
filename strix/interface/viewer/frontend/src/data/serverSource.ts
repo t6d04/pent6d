@@ -416,6 +416,11 @@ export interface WebControlState {
     llm_rate_limit_requests: number;
     llm_rate_limit_unit: "seconds" | "minutes" | "hours";
     llm_max_retries: number;
+    /**
+     * Names of saved custom model request headers. Values are never sent to
+     * the browser, so an existing row can only keep or replace its value.
+     */
+    llm_extra_headers: string[];
     web_search_provider: "auto" | "native" | "ddgs" | "exa" | "perplexity";
     native_web_search_available: boolean;
     model_warning: string;

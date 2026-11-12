@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents import RunConfig
 from agents.sandbox import SandboxRunConfig
+from agents.tool_context import ToolContext
 from openai import RateLimitError
 
 from strix.agents.factory import build_strix_agent, make_child_factory
@@ -51,6 +52,7 @@ from strix.runtime.attack_graph import AttackGraph
 from strix.runtime.supervisor import RunPhase, RunStatus, RunSupervisor
 from strix.telemetry import set_scan_phase
 from strix.telemetry.logging import set_scan_id, setup_scan_logging
+from strix.tools.agents_graph.tools import dispatch_ready_tasks
 from strix.tools.output_store import (
     WORKSPACE_SPILL_DIR,
     configure_spill_writer,
@@ -276,7 +278,10 @@ async def run_strix_scan(
         # An explicit unsupported native selection is a configuration error.
         # For legacy auto mode, the old provider resolver already gives a
         # non-fatal tool result when no optional search provider is configured.
-        if settings.integrations.web_search_provider == "native":
+        configured_provider = getattr(
+            getattr(settings, "integrations", None), "web_search_provider", "auto"
+        )
+        if configured_provider == "native":
             raise RuntimeError(str(web_search_backend["error"]))
         native_web_search = False
     else:
@@ -293,15 +298,19 @@ async def run_strix_scan(
         coordinator = AgentCoordinator()
     coordinator.set_snapshot_path(agents_path)
 
+    from strix.tools.checklist.tools import hydrate_checklist_from_disk
     from strix.tools.coverage.tools import hydrate_coverage_from_disk
     from strix.tools.notes.tools import hydrate_notes_from_disk
     from strix.tools.threat_model.tools import hydrate_threat_models_from_disk
     from strix.tools.todo.tools import hydrate_todos_from_disk
+    from strix.tools.validation.tools import hydrate_validations_from_disk
 
     hydrate_todos_from_disk(state_dir)
     hydrate_notes_from_disk(state_dir)
     hydrate_coverage_from_disk(state_dir)
+    hydrate_checklist_from_disk(state_dir)
     hydrate_threat_models_from_disk(state_dir)
+    hydrate_validations_from_disk(state_dir)
 
     root_id: str | None = None
     if is_resume:
@@ -422,7 +431,7 @@ async def run_strix_scan(
             request_timeout=settings.llm.timeout,
             prompt_cache=settings.llm.prompt_cache,
             extra_headers=settings.llm.extra_headers,
-            max_retries=settings.llm.max_retries,
+                max_retries=int(getattr(settings.llm, "max_retries", 2)),
         )
         run_config = RunConfig(
             model=resolved_model,
@@ -597,6 +606,11 @@ async def run_strix_scan(
             # snapshots recon into shared memory.  Children inherit it, while
             # a resumed process rehydrates it from disk.
             "recon_finalized": (state_dir.parent / "recon_complete.json").is_file(),
+            # New runs use the evidence-aware methodology checklist.  Keeping
+            # this explicit lets legacy/resume callers opt out without
+            # changing the persisted run format.
+            "checklist_enabled": bool(scan_config.get("checklist_enabled", True)),
+            "validation_enabled": bool(scan_config.get("validation_enabled", True)),
             # Bounded fan-out keeps the shared target request budget and the
             # DeepSeek context budget predictable.  The create_agent tool
             # enforces this limit for direct and nested children.
@@ -610,6 +624,32 @@ async def run_strix_scan(
             "state_dir": state_dir,
             "max_context_images": settings.runtime.max_context_images,
         }
+
+        async def _dispatch_followups() -> dict[str, Any]:
+            """Dispatch scheduler-created follow-ups from the root context."""
+            tool_ctx = ToolContext(
+                context=context,
+                tool_name="dispatch_ready_tasks",
+                tool_call_id=f"auto-followup-{uuid.uuid4().hex[:8]}",
+                tool_arguments=json.dumps({"max_tasks": context["max_concurrent_children"]}),
+            )
+            raw = await dispatch_ready_tasks.on_invoke_tool(
+                tool_ctx,
+                json.dumps({"max_tasks": context["max_concurrent_children"]}),
+            )
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "invalid follow-up dispatcher response"}
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"success": False, "error": "invalid follow-up dispatcher response"}
+            if isinstance(raw, dict):
+                return raw
+            return {"success": False, "error": "invalid follow-up dispatcher response"}
+
+        coordinator.set_followup_dispatcher(_dispatch_followups)
 
         root_session = open_agent_session(root_id, agents_db)
         sessions_to_close.append(root_session)

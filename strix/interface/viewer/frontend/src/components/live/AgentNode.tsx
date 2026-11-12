@@ -16,7 +16,7 @@ function AgentNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`w-[260px] rounded-lg border px-4 py-3 transition-colors ${
+      className={`w-full min-w-0 rounded-lg border px-4 py-3 transition-colors ${
         agent.isSelected || selected
           ? "border-white/30 bg-[#0a0a0a]"
           : "border-[#222] bg-black hover:border-[#333]"

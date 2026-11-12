@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -19,12 +20,34 @@ from strix.core.execution import notify_parent_on_terminal
 from strix.core.hooks import LLM_TURN_KEY
 from strix.report.state import get_global_report_state
 from strix.skills import validate_requested_skills
+from strix.tools.checklist.tools import validate_checklist_codes
+from strix.tools.coverage.tools import get_coverage_entries
 
 
 _ACTIVE_STATUSES: frozenset[str] = frozenset({"running", "waiting"})
 _AGENT_ROLES: frozenset[str] = frozenset(
-    {"recon", "source_mapper", "specialist", "validator", "gap_closer", "chain_reviewer"}
+    {
+        "recon",
+        "source_mapper",
+        "specialist",
+        "hypothesis",
+        "validator",
+        "reflection",
+        "gap_closer",
+        "chain_reviewer",
+    }
 )
+_AGENT_NAME_MAX_CHARS = 80
+_ROLE_DISPLAY_NAMES: dict[str, str] = {
+    "recon": "Recon",
+    "source_mapper": "Source Mapper",
+    "specialist": "Specialist",
+    "hypothesis": "Hypothesis Explorer",
+    "validator": "Validator",
+    "reflection": "Reflection",
+    "gap_closer": "Gap Closer",
+    "chain_reviewer": "Chain Reviewer",
+}
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +62,8 @@ def _normalize_agent_role(  # noqa: PLR0911
 ) -> str:
     """Normalize explicit role metadata, with a conservative legacy fallback."""
     value = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"hypothesis_explorer", "creative", "creative_hypothesis"}:
+        return "hypothesis"
     if value in _AGENT_ROLES:
         return value
     if "source" in value or any("source" in skill.lower() for skill in skills):
@@ -46,6 +71,8 @@ def _normalize_agent_role(  # noqa: PLR0911
     haystack = f"{name} {' '.join(skills)}".lower()
     if re.search(r"\b(recon|reconnaissance|asset[_ -]?discovery|mapping)\b", haystack):
         return "recon"
+    if re.search(r"\b(hypothes|hypothesis|creative|explorer)\b", haystack):
+        return "hypothesis"
     if re.search(r"\b(chain|impact)\b", haystack):
         return "chain_reviewer"
     if re.search(r"\b(validate|validation|verif|independent)\b", haystack):
@@ -53,6 +80,26 @@ def _normalize_agent_role(  # noqa: PLR0911
     if re.search(r"\b(gap|follow[_ -]?up|closure)\b", haystack):
         return "gap_closer"
     return "specialist"
+
+
+def _short_agent_name(raw: str, *, role: str, component: str, risk_area: str) -> str:
+    """Keep graph labels readable even when the model passes its whole prompt.
+
+    A dispatch ``name`` is a UI label, not another copy of the task. Long names
+    make the workflow graph and agent picker unreadable, so fall back to the
+    role plus the bounded component/risk area the caller already supplied.
+    """
+    name = re.sub(r"\s+", " ", (raw or "").strip())
+    if name and len(name) <= _AGENT_NAME_MAX_CHARS:
+        return name
+    label = _ROLE_DISPLAY_NAMES.get(role, "Specialist")
+    focus = (component or risk_area).strip()
+    if focus:
+        return f"{label}: {focus[:60]}"
+    if name:
+        digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:4]
+        return f"{label} {digest}"
+    return label
 
 
 def _derived_dispatch_key(
@@ -546,6 +593,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
     risk_area: str = "",
     phase: str = "",
     evidence_ids: list[str] | None = None,
+    checklist_codes: list[str] | None = None,
     stop_conditions: list[str] | None = None,
     dispatch_key: str = "",
 ) -> str:
@@ -580,20 +628,27 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
 
     **Dispatch metadata (required for new scans):**
 
-    - ``role``: ``recon``, ``source_mapper``, ``specialist``, ``validator``,
-      ``gap_closer``, or ``chain_reviewer``.  If omitted, Strix infers a
-      conservative role from the name and skills for backwards compatibility.
+    - ``role``: ``recon``, ``source_mapper``, ``specialist``, ``hypothesis``,
+      ``validator``, ``reflection``, ``gap_closer``, or ``chain_reviewer``.
+      ``hypothesis`` is the focused Hypothesis Explorer role. If omitted, Strix
+      infers a conservative role from the name and skills for backwards
+      compatibility.
     - ``component`` and ``risk_area`` identify the bounded responsibility.
     - ``phase`` is ``discovery``, ``testing``, ``validation``, or
       ``impact_review``.
     - ``evidence_ids`` names recon/request/finding records supporting the task.
+    - ``checklist_codes`` assigns the methodology classes this child owns;
+      every specialist/validator on checklist-enabled runs must receive at
+      least one code so the planner can reconcile work without guessing.
     - ``dispatch_key`` should be stable for the run (for example
       ``api.example.test|tenant-api|idor|testing``); an active or completed
       child with the same key is not spawned again.
 
     Args:
-        name: Human-readable child name (used in graph views and
-            ``send_message_to_agent`` flows).
+        name: Short human-readable child label (used in graph views and
+            ``send_message_to_agent`` flows), e.g. ``"Hypothesis Explorer — Upload"``.
+            Do not paste the task or target paragraph here; overlong names are
+            reduced to the role plus component/risk area.
         task: Specific objective. Be concrete — what to test, what
             success looks like, any constraints. Name the target the
             child should call ``get_threat_model`` on, and any shared
@@ -617,6 +672,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
         risk_area: One vulnerability family or hypothesis area.
         phase: Lifecycle phase for this child.
         evidence_ids: IDs of durable observations supporting the dispatch.
+        checklist_codes: Stable methodology checklist codes owned by the child.
         stop_conditions: Concrete conditions for ending the child.
         dispatch_key: Stable deduplication key for this responsibility.
     """
@@ -655,6 +711,9 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
     risk_value = risk_area.strip()
     phase_value = phase.strip()
     evidence_values = [str(value).strip() for value in (evidence_ids or []) if str(value).strip()]
+    checklist_values = [
+        str(value).strip() for value in (checklist_codes or []) if str(value).strip()
+    ]
     stop_values = [str(value).strip() for value in (stop_conditions or []) if str(value).strip()]
     dispatch_value = dispatch_key.strip() or _derived_dispatch_key(
         role=role_value,
@@ -662,6 +721,9 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
         risk_area=risk_value,
         phase=phase_value,
         task=task,
+    )
+    name = _short_agent_name(
+        name, role=role_value, component=component_value, risk_area=risk_value
     )
 
     scan_mode = str(inner.get("scan_mode") or "").strip().lower()
@@ -692,6 +754,16 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
             },
             ensure_ascii=False,
         )
+    unknown_checklist_codes = validate_checklist_codes(checklist_values)
+    if unknown_checklist_codes:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Unknown checklist code(s): " + ", ".join(unknown_checklist_codes),
+                "checklist_codes": checklist_values,
+            },
+            ensure_ascii=False,
+        )
     if parent_is_root and live_target and scan_mode in {"standard", "deep"}:
         required_metadata = [
             field
@@ -704,6 +776,12 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
         ]
         if role_value not in {"recon", "source_mapper"} and not evidence_values:
             required_metadata.append("evidence_ids")
+        if (
+            inner.get("checklist_enabled")
+            and role_value not in {"recon", "source_mapper"}
+            and not checklist_values
+        ):
+            required_metadata.append("checklist_codes")
         if required_metadata:
             return json.dumps(
                 {
@@ -802,6 +880,7 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
             "risk_area": risk_value,
             "phase": phase_value,
             "evidence_ids": evidence_values,
+            "checklist_codes": checklist_values,
             "stop_conditions": stop_values,
             "dispatch_key": dispatch_value,
         }
@@ -859,6 +938,12 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
                     ),
                     "source_node_ids": [f"run:{inner.get('scan_id')}"] if parent_is_root else [],
                     "source_information": evidence_values,
+                    "checklist_codes": checklist_values,
+                    "skills": skill_list,
+                    "source_review": source_review,
+                    "component": component_value,
+                    "risk_area": risk_value,
+                    "stop_conditions": stop_values,
                     "agent_id": result.get("agent_id"),
                 },
             )
@@ -870,6 +955,142 @@ async def create_agent(  # noqa: PLR0911, PLR0912, PLR0915
 
     return json.dumps(
         result,
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+@function_tool(timeout=120)
+async def dispatch_ready_tasks(  # noqa: PLR0911, PLR0912
+    ctx: RunContextWrapper,
+    max_tasks: int = 4,
+) -> str:
+    """Dispatch ready graph follow-ups without duplicating child agents.
+
+    This is the deterministic bridge between the Planner graph and the
+    coordinator. It only dispatches scheduler-created validator/chain tasks
+    that carry inherited skills and evidence; broad planner tasks still need
+    an explicit ``create_agent`` call with a bounded scope.
+    """
+    inner = _ctx(ctx)
+    coordinator = coordinator_from_context(inner)
+    me = inner.get("agent_id")
+    graph = inner.get("attack_graph")
+    spawner = inner.get("spawn_child_agent")
+    if coordinator is None or not isinstance(me, str):
+        return json.dumps({"success": False, "error": "agent coordinator unavailable"})
+    if coordinator.parent_of.get(me) is not None:
+        return json.dumps(
+            {"success": False, "error": "only the root agent may dispatch graph tasks"}
+        )
+    if graph is None or not hasattr(graph, "ready_tasks"):
+        return json.dumps({"success": False, "error": "attack graph unavailable"})
+    if not callable(spawner):
+        return json.dumps({"success": False, "error": "child-agent spawner unavailable"})
+
+    limit = max(1, min(int(max_tasks), 8))
+    active = sum(
+        1
+        for child_id, status in coordinator.statuses.items()
+        if coordinator.parent_of.get(child_id) is not None
+        and status in {"running", "waiting", "budget_paused"}
+    )
+    capacity = max(0, int(inner.get("max_concurrent_children") or 4) - active)
+    if capacity == 0:
+        return json.dumps(
+            {
+                "success": True,
+                "dispatched": [],
+                "skipped": 0,
+                "active_children": active,
+                "note": "Child-agent concurrency capacity is full; tasks remain ready.",
+            },
+            ensure_ascii=False,
+        )
+    ready = await graph.claim_ready_tasks(
+        limit=min(limit, capacity),
+        roles={"validator", "reflection", "chain_reviewer", "gap_closer"},
+    )
+    candidates = [
+        task
+        for task in ready
+        if isinstance(task.get("metadata"), dict)
+        and task["metadata"].get("node_type")
+        in {"validator", "reflection", "chain_reviewer", "follow_up"}
+    ]
+    candidate_ids = {str(task.get("task_id")) for task in candidates}
+    for claimed_task in ready:
+        if str(claimed_task.get("task_id")) not in candidate_ids:
+            await graph.set_status(str(claimed_task.get("task_id")), "ready")
+    selected = candidates
+    if not selected:
+        return json.dumps(
+            {
+                "success": True,
+                "dispatched": [],
+                "skipped": len(candidates),
+                "active_children": active,
+                "note": "No dispatchable ready follow-up task is available.",
+            },
+            ensure_ascii=False,
+        )
+
+    parent_history = list(ctx.turn_input) if ctx.turn_input else []
+    dispatched: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for task in selected:
+        task_id = str(task.get("task_id") or "")
+        metadata = dict(task.get("metadata") or {})
+        skills = [str(item) for item in metadata.get("skills", []) if str(item).strip()]
+        if not task_id or not skills:
+            await graph.schedule_retry(task_id, "follow-up has no inherited skills")
+            failures.append({"task_id": task_id, "error": "follow-up has no inherited skills"})
+            continue
+        try:
+            task_instructions = (
+                f"{task.get('title', 'Follow-up task')}\n"
+                "Use the inherited evidence and shared memory. Validate the source task, "
+                "update the attack graph/hypotheses when needed, record coverage and "
+                "checklist outcomes, and close with agent_finish."
+            )
+            if str(task.get("role") or "") == "validator":
+                task_instructions += (
+                    f" The durable validator task ID is {task_id}; call record_validation "
+                    "with this exact task ID before agent_finish."
+                )
+            result = await spawner(
+                parent_ctx=inner,
+                name=str(task.get("title") or task.get("role") or "Follow-up"),
+                task=task_instructions,
+                skills=skills,
+                parent_history=parent_history,
+                source_review=bool(metadata.get("source_review")),
+                role=str(task.get("role") or "validator"),
+                component=str(metadata.get("component") or ""),
+                risk_area=str(metadata.get("risk_area") or task.get("risk") or ""),
+                phase=str(task.get("phase") or "validation"),
+                evidence_ids=list(task.get("evidence_ids") or []),
+                checklist_codes=list(metadata.get("checklist_codes") or []),
+                stop_conditions=list(metadata.get("stop_conditions") or []),
+                dispatch_key=str(task.get("dispatch_key") or task_id),
+            )
+            if not result.get("success") or not result.get("agent_id"):
+                await graph.schedule_retry(task_id, str(result.get("error", "spawn failed")))
+                failures.append({"task_id": task_id, "error": result.get("error", "spawn failed")})
+                continue
+            await graph.bind_agent(task_id, str(result["agent_id"]))
+            dispatched.append({"task": task, "agent": result})
+        except (RuntimeError, TypeError, ValueError) as exc:
+            await graph.schedule_retry(task_id, str(exc))
+            failures.append({"task_id": task_id, "error": str(exc)})
+
+    return json.dumps(
+        {
+            "success": not failures,
+            "dispatched": dispatched,
+            "failures": failures,
+            "remaining_ready": max(0, len(candidates) - len(selected)),
+        },
         ensure_ascii=False,
         default=str,
     )
@@ -894,6 +1115,11 @@ async def agent_finish(
     2. Posts a structured completion report to the parent's inbox
        (when ``report_to_parent`` is true).
     3. Stops this subagent's execution.
+
+    For checklist-enabled runs, completion also closes the matching attack
+    graph task and creates idempotent validator/chain-review tasks when the
+    role and evidence warrant them. The parent receives those task records in
+    the completion message and should dispatch them before finishing.
 
     **Vulnerability findings must already be filed via
     ``create_vulnerability_report`` (or ``create_dependency_report``
@@ -960,6 +1186,44 @@ async def agent_finish(
 
     filed_reports = _filed_reports_by(me)
     filed_report_ids = [str(r.get("id")) for r in filed_reports]
+    coverage_ids = [
+        str(entry.get("entry_id"))
+        for entry in get_coverage_entries()
+        if entry.get("entry_id")
+        and entry.get("agent_id") == me
+        and str(entry.get("outcome")) in {"reported", "informational"}
+    ]
+    report_state = get_global_report_state()
+    thinking_ids = [
+        str(item.get("id"))
+        for item in (report_state.thinking_hypotheses if report_state is not None else [])
+        if isinstance(item, dict) and item.get("id") and item.get("agent_id") == me
+    ]
+
+    scheduled_tasks: list[dict[str, Any]] = []
+    attack_graph = inner.get("attack_graph")
+    if me and attack_graph is not None and hasattr(attack_graph, "complete_and_schedule_followups"):
+        metadata = coordinator.metadata.get(me, {}) if coordinator is not None else {}
+        with contextlib.suppress(Exception):
+            follow_up = await attack_graph.complete_and_schedule_followups(
+                agent_id=me,
+                role=str(metadata.get("role") or "specialist"),
+                success=success,
+                report_ids=filed_report_ids,
+                findings=list(findings or []),
+                open_items=list(open_items or []),
+                evidence_ids=list(metadata.get("evidence_ids") or []),
+                checklist_codes=list(metadata.get("checklist_codes") or []),
+                coverage_ids=coverage_ids,
+                thinking_ids=thinking_ids,
+            )
+            scheduled_tasks = list(follow_up.get("scheduled_tasks") or [])
+
+    # Mark the current child terminal before dispatching so its slot is
+    # released and the follow-up scheduler can use the full concurrency budget.
+    await coordinator.set_status(me, "completed")
+    automatic_dispatch = await coordinator.dispatch_ready_followups()
+    automatic_tasks = list(automatic_dispatch.get("dispatched") or [])
 
     parent_notified = False
     if report_to_parent and await coordinator.claim_parent_notice(me):
@@ -976,6 +1240,19 @@ async def agent_finish(
             open_items=list(open_items or []),
             filed_reports=filed_reports,
         )
+        if scheduled_tasks:
+            report += "\n\n[Workflow scheduler] Follow-up tasks created:\n" + "\n".join(
+                f"- {task.get('task_id')}: {task.get('role')} — {task.get('title')} "
+                f"({task.get('status')})"
+                for task in scheduled_tasks
+            )
+        if automatic_tasks:
+            report += "\n\n[Workflow scheduler] Automatically dispatched:\n" + "\n".join(
+                f"- {item.get('agent', {}).get('agent_id', '')}: "
+                f"{item.get('task', {}).get('role', 'follow-up')} — "
+                f"{item.get('task', {}).get('title', '')}"
+                for item in automatic_tasks
+            )
         await coordinator.send(
             parent_id,
             {
@@ -985,11 +1262,11 @@ async def agent_finish(
                 "type": "completion",
                 "priority": "high",
                 "filed_report_ids": filed_report_ids,
+                "scheduled_tasks": scheduled_tasks,
             },
         )
         parent_notified = True
 
-    await coordinator.set_status(me, "completed")
     if not parent_notified:
         # Silence here would leave a parent waiting on a report that is never coming.
         await notify_parent_on_terminal(coordinator, me, "completed")
@@ -1011,6 +1288,8 @@ async def agent_finish(
             "agent_id": me,
             "summary": result_summary,
             "filed_report_ids": filed_report_ids,
+            "scheduled_tasks": scheduled_tasks,
+            "automatic_dispatch": automatic_dispatch,
             "findings_count": len(findings or []),
             "open_items_count": len(open_items or []),
             "has_recommendations": bool(final_recommendations),

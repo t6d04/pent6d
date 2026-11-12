@@ -293,6 +293,26 @@ class WebRuntime:
             raise ValueError("Create and select a project before configuring a scan")
         return project
 
+    def _ensure_setup_project(self) -> dict[str, Any]:
+        """Return the active setup project, creating one for a fresh hub.
+
+        The browser setup screen is intentionally usable without a CLI
+        ``--target``.  In that path there is no project yet, so the first
+        ``Add target``/Enter action must not fail merely because the operator
+        has not visited the Projects tab first.  Explicit project selection is
+        still preserved when projects already exist.
+        """
+        project = self._active_project()
+        if project is not None:
+            return project
+
+        project = self._new_project("New project")
+        self.projects.append(project)
+        self.active_project_id = str(project["id"])
+        self._save_projects()
+        self._add_message("Created project New project for the new scan.")
+        return project
+
     def _project_summary(self, project: dict[str, Any]) -> dict[str, Any]:
         run_names = [name for name in project.get("run_names", []) if isinstance(name, str)]
         run_names.reverse()
@@ -363,6 +383,9 @@ class WebRuntime:
                     "llm_rate_limit_requests": llm.rate_limit_requests,
                     "llm_rate_limit_unit": llm.rate_limit_unit,
                     "llm_max_retries": llm.max_retries,
+                    # Only names leave the hub: header values often carry
+                    # credentials and are never echoed back to the browser.
+                    "llm_extra_headers": sorted((llm.extra_headers or {}).keys()),
                     "web_search_provider": settings.integrations.web_search_provider,
                     "native_web_search_available": native_web_search_supported(llm),
                     "model_warning": "",
@@ -382,6 +405,7 @@ class WebRuntime:
             "project.create": self._create_project,
             "project.select": self._select_project,
             "run.chat": self._chat_run,
+            "run.resume": self._resume_run,
             "run.stop": self._stop_run,
             "settings.save_llm": self._save_llm,
             "settings.save_web_search": self._save_web_search,
@@ -402,7 +426,9 @@ class WebRuntime:
         return value.strip()
 
     def _add_target(self, payload: dict[str, Any]) -> dict[str, Any]:
-        project = self._require_project()
+        # Adding the first authorized target is the natural entry point for
+        # the setup screen.  Do not require a separate project-creation step.
+        project = self._ensure_setup_project()
         target = self._required_string(payload, "target")
         targets = project["targets"]
         if target not in targets:
@@ -592,6 +618,75 @@ class WebRuntime:
             "project_id": project["id"],
         }
 
+    def _resume_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Resume an interrupted or failed scan from its persisted agent session.
+
+        A failed run is often a provider-side model outage rather than a bad
+        assessment. Its agent session is still on disk, so let the operator
+        retry it once the model is back instead of forcing a fresh scan.
+        """
+        project = self._require_project()
+        run_name = self._required_string(payload, "run_name")
+        if run_name not in project.get("run_names", []):
+            raise ValueError("This run is not part of the selected project")
+        if Path(run_name).name != run_name or run_name in {"", ".", ".."}:
+            raise ValueError("Invalid run name")
+
+        run_dir = self._project_runs_dir(project) / run_name
+        record_path = run_record_path(run_dir)
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ValueError("The selected run has no saved record") from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("The selected run record is unreadable") from exc
+        status = str(record.get("status", "")).lower() if isinstance(record, dict) else ""
+        if status not in {"interrupted", "failed"}:
+            raise ValueError("Only an interrupted or failed run can be continued")
+
+        state_dir = runtime_state_dir(run_dir)
+        if not (state_dir / "agents.json").is_file() or not (state_dir / "agents.db").is_file():
+            raise ValueError("This run does not have a saved agent session to continue")
+
+        process = self._workers.get(run_name)
+        if process is not None and process.poll() is None:
+            raise ValueError("This run is already being continued")
+
+        model = (load_settings().llm.model or "").strip()
+        if not model:
+            raise ValueError("No model configured. Save a model before continuing the scan.")
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("Web runtime is not ready")
+        future = asyncio.run_coroutine_threadsafe(preflight_model_connection(model), loop)
+        try:
+            future.result(timeout=310)
+        except TimeoutError as exc:
+            raise RuntimeError("Model connection timed out") from exc
+
+        command = [
+            sys.executable,
+            "-m",
+            "strix.interface.main",
+            "-n",
+            "--resume",
+            run_name,
+        ]
+        if self.max_turns:
+            command.extend(["--max-turns", str(self.max_turns)])
+        if self.args.config:
+            command.extend(["--config", self.args.config])
+
+        self._stopping_workers.discard(run_name)
+        process = self._launch_worker(project, run_name, command, kind="resume")
+        self._add_message(f"Continuing {status} run {run_name}.")
+        return {
+            "started": True,
+            "run_name": run_name,
+            "pid": process.pid,
+            "project_id": project["id"],
+        }
+
     def _save_llm(self, payload: dict[str, Any]) -> dict[str, Any]:
         model = self._required_string(payload, "model")
         api_key = payload.get("api_key")
@@ -600,6 +695,7 @@ class WebRuntime:
         rate_limit_requests = payload.get("rate_limit_requests", current_llm.rate_limit_requests)
         rate_limit_unit = payload.get("rate_limit_unit", current_llm.rate_limit_unit)
         max_retries = payload.get("max_retries", current_llm.max_retries)
+        extra_headers = self._resolve_extra_headers(payload, current_llm.extra_headers)
         if api_key is not None and not isinstance(api_key, str):
             raise TypeError("api_key must be a string")
         if api_base is not None and not isinstance(api_base, str):
@@ -621,6 +717,7 @@ class WebRuntime:
             rate_limit_requests=rate_limit_requests,
             rate_limit_unit=rate_limit_unit,
             max_retries=max_retries,
+            extra_headers=extra_headers,
         )
         llm = load_settings().llm
         return {
@@ -630,7 +727,52 @@ class WebRuntime:
             "llm_rate_limit_requests": llm.rate_limit_requests,
             "llm_rate_limit_unit": llm.rate_limit_unit,
             "llm_max_retries": llm.max_retries,
+            "llm_extra_headers": sorted((llm.extra_headers or {}).keys()),
         }
+
+    @staticmethod
+    def _resolve_extra_headers(
+        payload: dict[str, Any], current: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        """Merge the setup screen's header rows with the stored values.
+
+        The browser only ever sees header names. A row with a blank value keeps
+        the stored value for that name, which lets an operator remove a header
+        (drop its row) or replace its secret without the old value being sent
+        back to the page. ``None`` means "leave the stored headers untouched".
+        """
+        rows = payload.get("extra_headers")
+        if rows is None:
+            return None
+        if not isinstance(rows, list):
+            raise TypeError("extra_headers must be a list of {name, value} rows")
+
+        stored = {name.casefold(): (name, value) for name, value in (current or {}).items()}
+        resolved: dict[str, str] = {}
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise TypeError("each extra header must be an object with name and value")
+            raw_name = row.get("name")
+            raw_value = row.get("value", "")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                raise ValueError("each extra header needs a name")
+            if not isinstance(raw_value, str):
+                raise TypeError(f"header {raw_name!r} value must be a string")
+            name = raw_name.strip()
+            folded = name.casefold()
+            if folded in seen:
+                raise ValueError(f"duplicate extra header: {name}")
+            seen.add(folded)
+            value = raw_value.strip()
+            if value:
+                resolved[name] = value
+                continue
+            existing = stored.get(folded)
+            if existing is None:
+                raise ValueError(f"extra header {name!r} needs a value")
+            resolved[existing[0]] = existing[1]
+        return resolved
 
     def _save_web_search(self, payload: dict[str, Any]) -> dict[str, Any]:
         provider = self._required_string(payload, "provider")

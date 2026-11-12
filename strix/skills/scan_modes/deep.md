@@ -67,18 +67,22 @@ invariants. For **every material high-value component**, create at least one
 evidence-backed hypothesis or explicitly record why no meaningful one exists.
 
 Load `hypothesis_driven_security_testing` and create a narrowly scoped
-`Hypothesis Explorer` child when a hypothesis does not map cleanly to one
-existing vulnerability family. Good sources are policy drift across UI/API/
-legacy/worker paths, expected controls missing from a sensitive workflow,
-identity/routing/parser/cache representation mismatches, and evidence-backed
-pivots between otherwise low-severity facts. The child must state observed
-facts, protected invariant, attacker capability, one minimal differential
-test, success condition, and stop condition before testing. Do not create a
-generic creativity task or run an unbounded payload search.
+`Hypothesis Explorer` child with `role="hypothesis"` and a short name when a
+hypothesis does not map cleanly to one existing vulnerability family. Good
+sources are policy drift across UI/API/legacy/worker paths, expected controls
+missing from a sensitive workflow, identity/routing/parser/cache representation
+mismatches, and evidence-backed pivots between otherwise low-severity facts.
+The child must state observed facts, protected invariant, attacker capability,
+one minimal differential test, success condition, and stop condition before
+testing. Set `testability` on every Thinking record and test `testable_now`
+candidates first. Do not create a generic creativity task or run an unbounded
+payload search.
 
 Positive results still require independent validation; negative results must
 name the control/invariant that held. A plausible path lacking a prerequisite
-is recorded with `record_thinking`, never promoted to a finding.
+is recorded with `record_thinking` and its `testability`, never promoted to a
+finding. Before finishing, call `get_creative_scorecard` and make sure the
+creative layer produced testable work rather than only blocked notes.
 
 ## Deep CVE PoC Validation
 

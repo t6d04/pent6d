@@ -17,12 +17,15 @@ from agents.tool_context import ToolContext
 
 from strix.core.agents import AgentCoordinator
 from strix.report.state import ReportState, set_global_report_state
+from strix.runtime.attack_graph import AttackGraph
 from strix.tools.agents_graph.tools import (
     agent_finish,
     create_agent,
+    dispatch_ready_tasks,
     send_message_to_agent,
     wait_for_agents,
 )
+from strix.tools.checklist.tools import known_checklist_codes
 
 
 if TYPE_CHECKING:
@@ -185,6 +188,100 @@ async def test_live_specialist_is_blocked_until_recon_snapshot_is_finalized() ->
 
     assert result["success"] is False
     assert "Recon is not finalized" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_checklist_enabled_dispatch_requires_owned_checklist_codes() -> None:
+    coordinator = await _graph(interactive=False)
+    await coordinator.register("mapper", "Recon Mapper", parent_id="root", role="recon")
+
+    async def _spawn(**_kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "agent_id": "specialist-child"}
+
+    base_args = {
+        "name": "IDOR Specialist",
+        "task": "Test the tenant API object boundary",
+        "skills": ["vulnerabilities/idor"],
+        "role": "specialist",
+        "component": "tenant-api",
+        "risk_area": "idor",
+        "phase": "testing",
+        "evidence_ids": ["recon-1"],
+        "stop_conditions": ["all tenant object references are tested"],
+        "dispatch_key": "tenant-api|idor|testing",
+    }
+    context = {
+        "spawn_child_agent": _spawn,
+        "scan_mode": "standard",
+        "scan_target_types": ["web_application"],
+        "max_concurrent_children": 4,
+        "recon_finalized": True,
+        "checklist_enabled": True,
+    }
+    missing = await _call(create_agent, coordinator, "root", base_args, **context)
+    assert missing["success"] is False
+    assert "checklist_codes" in missing["error"]
+
+    code = next(iter(known_checklist_codes()))
+    complete = await _call(
+        create_agent,
+        coordinator,
+        "root",
+        {**base_args, "checklist_codes": [code], "dispatch_key": "tenant-api|idor|testing-2"},
+        **context,
+    )
+    assert complete["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_root_dispatches_ready_followup_from_attack_graph(tmp_path: Path) -> None:
+    coordinator = await _graph(interactive=False)
+    graph = AttackGraph(tmp_path)
+    origin = await graph.add_task(
+        title="Test authorization",
+        role="specialist",
+        phase="execution",
+        dispatch_key="api|idor|testing",
+        metadata={
+            "agent_id": "child",
+            "node_type": "specialist",
+            "skills": ["vulnerabilities/idor"],
+            "checklist_codes": ["P6-VULNERABILITY-IDOR"],
+            "component": "api",
+            "risk_area": "idor",
+        },
+    )
+    await graph.complete_and_schedule_followups(
+        agent_id="child",
+        role="specialist",
+        success=True,
+        report_ids=["finding-1"],
+    )
+    captured: dict[str, Any] = {}
+
+    async def _spawn(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"success": True, "agent_id": "validator-child"}
+
+    result = await _call(
+        dispatch_ready_tasks,
+        coordinator,
+        "root",
+        {"max_tasks": 1},
+        attack_graph=graph,
+        spawn_child_agent=_spawn,
+        max_concurrent_children=4,
+    )
+    assert result["success"] is True
+    assert len(result["dispatched"]) == 1
+    assert captured["role"] == "validator"
+    assert captured["checklist_codes"] == ["P6-VULNERABILITY-IDOR"]
+    snapshot = await graph.snapshot()
+    validator = next(task for task in snapshot["tasks"].values() if task["role"] == "validator")
+    assert validator["status"] == "running"
+    assert validator["metadata"]["agent_id"] == "validator-child"
+    assert origin["task"]["task_id"] in validator["dependencies"]
+    assert validator["task_id"] in captured["task"]
 
 
 # --- send_message_to_agent -------------------------------------------------------
@@ -353,6 +450,41 @@ async def test_agent_finish_lists_the_reports_the_child_filed(report_state: Repo
     body = delivered[0]["content"]
     assert f"- {mine} [HIGH] IDOR on /api/audits" in body
     assert "Root's own" not in body
+
+
+@pytest.mark.asyncio
+async def test_agent_finish_triggers_automatic_followup_dispatch(
+    report_state: ReportState, tmp_path: Path
+) -> None:
+    del report_state
+    coordinator = await _graph(interactive=False)
+    graph = AttackGraph(tmp_path)
+    await graph.add_task(
+        title="Validate authorization",
+        role="specialist",
+        phase="execution",
+        dispatch_key="api|idor|testing",
+        metadata={"agent_id": "child", "skills": ["vulnerabilities/idor"]},
+    )
+    called: list[bool] = []
+
+    async def _dispatch() -> dict[str, Any]:
+        called.append(True)
+        return {"success": True, "dispatched": [{"agent": {"agent_id": "validator"}}]}
+
+    coordinator.set_followup_dispatcher(_dispatch)
+    result = await _call(
+        agent_finish,
+        coordinator,
+        "child",
+        {"result_summary": "completed"},
+        parent_id="root",
+        attack_graph=graph,
+    )
+
+    assert result["automatic_dispatch"]["automatic"] is True
+    assert called == [True]
+    assert coordinator.statuses["child"] == "completed"
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,10 @@ Pent6d is this customized local distribution of the Strix engine. The
 runtime import namespace and legacy `STRIX_*` settings remain supported for
 backwards compatibility with existing projects and scan artifacts.
 
+Use the `pent6d` executable for local scans and the browser UI. Existing
+`strix` configuration keys and run directories are intentionally kept
+compatible so older projects can be reopened without migration.
+
 ### The open-source AI pentesting tool. Autonomous AI hackers that find and fix your app’s vulnerabilities.
 
 <br/>
@@ -41,7 +45,9 @@ backwards compatibility with existing projects and scan artifacts.
 
 
 > [!TIP]
-> **New!** Pent6d integrates seamlessly with GitHub Actions and CI/CD pipelines. Automatically scan for vulnerabilities on every pull request and block insecure code before it reaches production - [Get started with no setup required](https://app.strix.ai?utm_source=github&utm_medium=readme&utm_content=tip_ci).
+> **New!** Pent6d can run locally from the CLI or its browser-first web hub. It
+> can also be used from CI/CD; configure the model credentials in the runner
+> and keep the scan scope limited to assets you are authorized to test.
 
 ---
 
@@ -97,7 +103,9 @@ pent6d --target ./app-directory
 ```
 
 > [!NOTE]
-> First run automatically pulls the sandbox Docker image. Results are saved to `strix_runs/<run-name>`
+> First run automatically pulls the sandbox Docker image. Results are saved to
+> `strix_runs/<run-name>` and include `run.json`, findings, recon state, and
+> workflow/session artifacts.
 
 ---
 
@@ -195,7 +203,11 @@ pent6d view my-run-name
 pent6d view --host 0.0.0.0 --port 8080 --no-open
 ```
 
-The dashboard shows the findings, a live map of the agent team, and past runs. Nothing leaves your machine, and the UI ships prebuilt. `pent6d view` binds to `127.0.0.1` and prints a tokened link that grants access to the run, so share it carefully.
+The dashboard shows findings, a live map of the agent team, recon data, the
+workflow graph, chat history, exports, and past runs. Nothing leaves your
+machine unless you explicitly configure a remote model or expose the hub.
+`pent6d view` binds to `127.0.0.1` and prints a tokened link that grants
+access to the run, so share it carefully.
 
 See the [viewer documentation](https://docs.strix.ai/usage/viewer) for the options and for reaching the viewer from another machine.
 
@@ -210,8 +222,52 @@ pent6d web
 pent6d web --target ./my-app --scan-mode quick
 ```
 
-For safety, scan controls bind to loopback only. The printed tokened URL is a
-local capability; do not share it.
+The web hub groups runs by **project**. A project owns its authorized targets,
+settings, and run history; selecting another project does not mix its findings
+or recon data into the current view. The browser provides **Projects** and
+**New Run** tabs, so a new run does not require a separate CLI process.
+
+To open the hub from another machine on a trusted LAN, bind explicitly and
+allow only the required CIDR:
+
+```bash
+pent6d web --host 0.0.0.0 --port 8081 --allow-network 192.168.16.0/24
+```
+
+`--allow-network` is an allow-list for browser clients, not a replacement for
+authentication. Keep the tokened URL private, use a narrow network range, and
+prefer an HTTPS reverse proxy or an SSH tunnel on untrusted networks.
+
+### Projects, runs, and continuation
+
+- **New Run** creates a run inside the selected project and preserves the
+  project's scope and model settings.
+- **Overview** shows live agent activity, findings, recon assets, workflow
+  state, and the run's chat. Findings can be exported as Markdown or PDF when
+  the required report data is available.
+- **Continue** is available for interrupted runs (and recoverable failures)
+  when the run has a saved `.state/agents.json` and `.state/agents.db`. It
+  resumes the existing run and keeps its artifacts; it does not create a new
+  project.
+- Run data is stored under `strix_runs/projects/` and remains available after
+  restarting the viewer.
+
+For a headless continuation, use the same run name:
+
+```bash
+pent6d -n --resume <run-name>
+```
+
+### Recon and coverage
+
+Recon runs before vulnerability specialists consume its shared results. The
+standard/deep workflow records discovered hosts and subdomains, service-alive
+checks, screenshots for alive web services, forms and POST input metadata,
+JavaScript/source-leak references, and other evidence that can be reused by
+later agents. Alive means the service responds as an active service, not only
+that DNS resolves. The workflow then schedules authorized alive hosts for
+testing instead of silently limiting coverage to a hand-picked “important”
+subset.
 
 ---
 
@@ -221,13 +277,13 @@ local capability; do not share it.
 
 ```bash
 # Scan a local codebase
-strix --target ./app-directory
+pent6d --target ./app-directory
 
 # Security review of a GitHub repository
-strix --target https://github.com/org/repo
+pent6d --target https://github.com/org/repo
 
 # Black-box web application assessment
-strix --target https://your-app.com
+pent6d --target https://your-app.com
 ```
 
 ### API Testing (OpenAPI / Swagger / Postman)
@@ -238,8 +294,8 @@ agent knows where to send traffic:
 
 ```bash
 # OpenAPI / Swagger file, Postman export, or a live collection by id
-strix --target ./openapi.yaml --target https://api.your-app.com
-strix --target postman://<collection-uuid> --target https://api.your-app.com
+pent6d --target ./openapi.yaml --target https://api.your-app.com
+pent6d --target postman://<collection-uuid> --target https://api.your-app.com
 ```
 
 
@@ -247,23 +303,23 @@ strix --target postman://<collection-uuid> --target https://api.your-app.com
 
 ```bash
 # Grey-box authenticated testing
-strix --target https://your-app.com --instruction "Perform authenticated testing using credentials: user:pass"
+pent6d --target https://your-app.com --instruction "Perform authenticated testing using credentials: user:pass"
 
 # Multi-target testing (source code + deployed app)
-strix -t https://github.com/org/app -t https://your-app.com
+pent6d -t https://github.com/org/app -t https://your-app.com
 
 # Targets from a file, one target per non-empty, non-comment line
-strix --target-list ./targets.txt
+pent6d --target-list ./targets.txt
 ```
 
 See the [CLI reference](https://docs.strix.ai/usage/cli) for every option, including scan modes, diff scope, instruction files, and budgets.
 
 ### Headless Mode
 
-Run Strix programmatically without interactive UI using the `-n/--non-interactive` flag - perfect for servers and automated jobs. The CLI prints real-time vulnerability findings and the final report before exiting. Exits with non-zero code when vulnerabilities are found.
+Run Pent6d programmatically without interactive UI using the `-n/--non-interactive` flag - perfect for servers and automated jobs. The CLI prints real-time vulnerability findings and the final report before exiting. Exits with non-zero code when vulnerabilities are found.
 
 ```bash
-strix -n --target https://your-app.com
+pent6d -n --target https://your-app.com
 ```
 
 ### CI/CD (GitHub Actions)
@@ -292,7 +348,7 @@ jobs:
           STRIX_LLM: ${{ secrets.STRIX_LLM }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
 
-        run: strix -n -t ./ --scan-mode quick
+        run: pent6d -n -t ./ --scan-mode quick
 ```
 
 > [!TIP]
@@ -308,10 +364,17 @@ export LLM_API_KEY="your-api-key"
 
 # Optional
 export LLM_API_BASE="your-api-base-url"  # if using a local model, e.g. Ollama, LMStudio
+
+# Optional request controls (also configurable from the web setup form)
+export STRIX_LLM_RATE_LIMIT_REQUESTS="30"
+export STRIX_LLM_RATE_LIMIT_UNIT="minutes"  # seconds, minutes, or hours
+export STRIX_LLM_MAX_RETRIES="3"
+export LLM_EXTRA_HEADERS='{"X-Tenant":"your-tenant"}'
 ```
 
 > [!NOTE]
 > Strix automatically saves your configuration to `~/.strix/cli-config.json`, so you don't have to re-enter it on every run.
+> The web setup form can persist the same model, rate-limit, retry, and extra-header settings. Treat custom headers and API keys as secrets: they are sent with model requests and should not be placed in a shared project configuration.
 > See the [configuration reference](https://docs.strix.ai/advanced/configuration) for every environment variable.
 
 #### Sign in with a ChatGPT subscription
@@ -319,23 +382,23 @@ export LLM_API_BASE="your-api-base-url"  # if using a local model, e.g. Ollama, 
 Instead of a metered API key, you can run Strix on your ChatGPT Plus/Pro subscription:
 
 ```bash
-strix auth login chatgpt             # sign in with your ChatGPT account
+pent6d auth login chatgpt             # sign in with your ChatGPT account
 export STRIX_LLM="chatgpt/gpt-5.4"   # chatgpt/<model> runs on the subscription
-strix auth status                    # show the active sign-in, or logout to forget it
+pent6d auth status                    # show the active sign-in, or logout to forget it
 ```
 
-#### Use the managed platform: `strix cloud`
+#### Use the managed platform: `pent6d cloud`
 
 Run scans on [app.strix.ai](https://app.strix.ai) from the terminal, without Docker or an LLM key:
 
 ```bash
-strix cloud login                                  # browser sign-in, one credential per install
-strix cloud scans start --source . --yes --wait    # scan local code, approving the upload
-strix cloud scans start --engagement-type live_test --domain-ids <uuid> --wait
-strix cloud vulns list --severity critical
+pent6d cloud login                                  # browser sign-in, one credential per install
+pent6d cloud scans start --source . --yes --wait    # scan local code, approving the upload
+pent6d cloud scans start --engagement-type live_test --domain-ids <uuid> --wait
+pent6d cloud vulns list --severity critical
 ```
 
-Every [REST API](https://docs.app.strix.ai) operation has a matching `strix cloud <resource> <verb>` command. Run `strix cloud` to list the resources, and add `help` to a resource to list its verbs. Output is JSON when stdout is not a terminal or when you pass `--json`. Binary downloads are the exception: redirect the raw bytes, or combine `--output FILE --json` for download metadata.
+Every [REST API](https://docs.app.strix.ai) operation has a matching `pent6d cloud <resource> <verb>` command. Run `pent6d cloud` to list the resources, and add `help` to a resource to list its verbs. Output is JSON when stdout is not a terminal or when you pass `--json`. Binary downloads are the exception: redirect the raw bytes, or combine `--output FILE --json` for download metadata.
 
 See the [cloud CLI documentation](https://docs.strix.ai/cloud/cli) for scopes, workspaces, billing, and source-upload options.
 

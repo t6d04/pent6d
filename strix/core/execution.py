@@ -178,15 +178,40 @@ _MAX_TRANSIENT_MODEL_RETRIES = 5
 _TRANSIENT_MODEL_RETRY_BASE_DELAY_S = 2.0
 _TRANSIENT_MODEL_RETRY_MAX_DELAY_S = 90.0
 
+# Some OpenAI-compatible gateways report a provider outage as HTTP 400 rather
+# than 5xx. Replaying the turn is safe and much better than failing the whole
+# assessment because the model was momentarily unavailable.
+_MODEL_UNAVAILABLE_MARKERS = (
+    "model is unavailable",
+    "model not available",
+    "model temporarily unavailable",
+    "no available channel",
+    "model is overloaded",
+)
+
 
 def _model_error_status_code(exc: BaseException) -> int | None:
     code = getattr(exc, "status_code", None)
     return code if isinstance(code, int) else None
 
 
+def _is_model_unavailable_error(exc: BaseException) -> bool:
+    """Whether a model error reports a provider/model outage.
+
+    ``HTTP 400`` normally means the request itself is invalid, so it must stay
+    non-transient. Only the explicit provider-outage wording is retried.
+    """
+    if not isinstance(exc, APIError) and _model_error_status_code(exc) is None:
+        return False
+    message = str(exc).casefold()
+    return any(marker in message for marker in _MODEL_UNAVAILABLE_MARKERS)
+
+
 def _is_transient_model_error(exc: BaseException) -> bool:
     if codex.is_content_guardrail_error(exc):
         return False
+    if _is_model_unavailable_error(exc):
+        return True
     if isinstance(
         exc, APITimeoutError | APIConnectionError | TimeoutError | ConnectionError | OSError
     ):
@@ -445,6 +470,7 @@ async def spawn_child_agent(
     risk_area: str = "",
     phase: str = "",
     evidence_ids: list[str] | None = None,
+    checklist_codes: list[str] | None = None,
     stop_conditions: list[str] | None = None,
     dispatch_key: str = "",
     event_sink: StreamEventSink | None = None,
@@ -471,6 +497,7 @@ async def spawn_child_agent(
         risk_area=risk_area,
         phase=phase,
         evidence_ids=evidence_ids,
+        checklist_codes=checklist_codes,
         stop_conditions=stop_conditions,
         dispatch_key=dispatch_key,
     )

@@ -13,6 +13,7 @@ from typing import Any
 from agents import RunContextWrapper, function_tool
 
 from strix.core.agents import coordinator_from_context
+from strix.tools.checklist.tools import checklist_status_for_state_dir
 from strix.tools.recon.tools import _host_key, read_recon
 
 
@@ -320,8 +321,9 @@ def _do_finish(  # noqa: PLR0911
             return {
                 "success": False,
                 "error": (
-                    "Chain/impact review is incomplete. Review every confirmed finding "
-                    "and informational observation with record_chain_review before "
+                    "Chain/impact review is incomplete. Review every confirmed finding, "
+                    "informational observation, and Thinking hypothesis with "
+                    "record_chain_review before "
                     "calling finish_scan."
                 ),
                 "chain_review": chain_status,
@@ -346,6 +348,16 @@ def _do_finish(  # noqa: PLR0911
             recommendations=recommendations.strip(),
         )
         vuln_count = len(report_state.vulnerability_reports)
+        try:
+            from strix.tools.chaining.tools import creative_scorecard
+
+            scorecard = creative_scorecard(agent_graph)
+            report_state.run_record["creative_scorecard"] = scorecard
+            report_state.save_run_data()
+        except Exception:
+            # The scorecard is reporting metadata; it must never block a finish.
+            logger.exception("creative scorecard failed; completing without it")
+            scorecard = {"success": False, "error": "scorecard unavailable"}
     except (ImportError, AttributeError) as e:
         logger.exception("finish_scan persistence failed")
         return {"success": False, "error": f"Failed to complete scan: {e!s}"}
@@ -359,6 +371,7 @@ def _do_finish(  # noqa: PLR0911
             "scan_completed": True,
             "message": "Scan completed successfully",
             "vulnerabilities_found": vuln_count,
+            "creative_scorecard": scorecard,
         }
         result.update(coverage_summary)
         result["chain_review"] = chain_status
@@ -418,7 +431,7 @@ def _coverage_summary(agent_graph: dict[str, Any]) -> dict[str, Any]:
 
 
 @function_tool(timeout=60)
-async def finish_scan(
+async def finish_scan(  # noqa: PLR0911, PLR0912
     ctx: RunContextWrapper,
     executive_summary: str,
     methodology: str,
@@ -494,6 +507,15 @@ async def finish_scan(
         every in-scope hostname whose service is alive. A single broad child
         does not satisfy this gate unless its task explicitly names every
         required hostname and the child completes.
+    8. **Methodology checklist gate.** Every skill-derived methodology class
+       must be closed as ``pass``, ``fail``, or ``not_applicable``. ``pass``
+       and ``fail`` require a concrete surface and evidence; ``partial``,
+       ``blocked``, and ``needs_validation`` are interim states and block
+       completion. Use ``checklist_progress`` and ``checklist_list`` to
+       reconcile the shared checklist before this call.
+    9. **Attack-graph validator gate.** Every generated validator and
+       chain-review task must be terminal, and every successful validator must
+       have a durable ``record_validation`` record before this call.
 
     **Calling this multiple times overwrites the previous report.**
     Make the single call comprehensive.
@@ -696,6 +718,48 @@ async def finish_scan(
             ensure_ascii=False,
             default=str,
         )
+
+    if inner.get("validation_enabled") and inner.get("attack_graph"):
+        # Keep the coordinator snapshot in ``graph``: the reporting gates below
+        # read it as a mapping. Reusing the name for the AttackGraph object made
+        # ``_do_finish`` call ``.get`` on it whenever coverage existed.
+        attack_graph = inner["attack_graph"]
+        if hasattr(attack_graph, "completion_gate"):
+            graph_gate = await attack_graph.completion_gate()
+            if not graph_gate.get("success"):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "scan_completed": False,
+                        "error": (
+                            "Attack-graph validation is incomplete. Resolve all ready, "
+                            "running, blocked, retrying, failed, and unvalidated "
+                            "validator/chain tasks before finishing."
+                        ),
+                        "attack_graph": graph_gate,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+
+    if inner.get("checklist_enabled") and inner.get("state_dir"):
+        checklist = checklist_status_for_state_dir(Path(inner["state_dir"]))
+        if not checklist.get("complete"):
+            return json.dumps(
+                {
+                    "success": False,
+                    "scan_completed": False,
+                    "error": (
+                        "Methodology checklist is incomplete. Close every item as "
+                        "pass, fail, or not_applicable; use partial/blocked/"
+                        "needs_validation only while work remains. Every pass/fail "
+                        "must include evidence."
+                    ),
+                    "checklist": checklist,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
 
     result = await asyncio.to_thread(
         _do_finish,

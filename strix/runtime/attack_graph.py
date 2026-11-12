@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ class TaskStatus(StrEnum):
     READY = "ready"
     BLOCKED = "blocked"
     RUNNING = "running"
+    RETRY_PENDING = "retry_pending"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -50,6 +51,9 @@ class AttackTask:
     evidence_ids: list[str] = field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
     attempts: int = 0
+    max_attempts: int = 3
+    retry_at: str | None = None
+    last_error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
@@ -66,6 +70,9 @@ class AttackTask:
             "evidence_ids": list(self.evidence_ids),
             "status": self.status.value,
             "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "retry_at": self.retry_at,
+            "last_error": self.last_error,
             "metadata": self.metadata,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -90,6 +97,9 @@ class AttackTask:
             evidence_ids=[str(item) for item in raw.get("evidence_ids", []) if str(item)],
             status=status,
             attempts=max(0, int(raw.get("attempts", 0))),
+            max_attempts=max(1, int(raw.get("max_attempts", 3))),
+            retry_at=str(raw.get("retry_at")) if raw.get("retry_at") else None,
+            last_error=str(raw.get("last_error") or ""),
             metadata=metadata,
             created_at=str(raw.get("created_at") or ""),
             updated_at=str(raw.get("updated_at") or ""),
@@ -121,6 +131,7 @@ class AttackGraph:
         evidence_ids: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         task_id: str | None = None,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
         """Add or return a task identified by ``dispatch_key``.
 
@@ -155,6 +166,7 @@ class AttackGraph:
                     dict.fromkeys(str(item) for item in (evidence_ids or []) if item)
                 ),
                 status=(TaskStatus.READY if not clean_dependencies else TaskStatus.BLOCKED),
+                max_attempts=max(1, min(int(max_attempts), 10)),
                 metadata=dict(metadata or {}),
                 created_at=now,
                 updated_at=now,
@@ -163,6 +175,7 @@ class AttackGraph:
             if missing:
                 return {"success": False, "error": "unknown task dependencies", "missing": missing}
             self.tasks[new_task.task_id] = new_task
+            self._refresh_blocked_locked()
             self._persist_locked()
             return {"success": True, "created": True, "task": new_task.to_dict()}
 
@@ -184,8 +197,82 @@ class AttackGraph:
             task.status = next_status
             if increment_attempt:
                 task.attempts += 1
+            if next_status != TaskStatus.RETRY_PENDING:
+                task.retry_at = None
+            if next_status != TaskStatus.FAILED:
+                task.last_error = ""
             task.updated_at = _now()
             self._refresh_blocked_locked()
+            self._persist_locked()
+            return {"success": True, "task": task.to_dict()}
+
+    async def claim_ready_tasks(
+        self,
+        *,
+        limit: int = 4,
+        roles: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Atomically claim ready tasks so concurrent schedulers cannot duplicate them."""
+        now = datetime.now(UTC)
+        claimed: list[dict[str, Any]] = []
+        async with self._lock:
+            self._refresh_blocked_locked(now=now)
+            for task in self.tasks.values():
+                if len(claimed) >= max(1, limit):
+                    break
+                if task.status != TaskStatus.READY:
+                    continue
+                if roles is not None and task.role not in roles:
+                    continue
+                task.status = TaskStatus.RUNNING
+                task.attempts += 1
+                task.retry_at = None
+                task.last_error = ""
+                task.updated_at = now.isoformat()
+                claimed.append(task.to_dict())
+            if claimed:
+                self._persist_locked()
+        return deepcopy(claimed)
+
+    async def schedule_retry(self, task_id: str, error: str) -> dict[str, Any]:
+        """Put a failed dispatch back into a bounded exponential retry queue."""
+        async with self._lock:
+            task = self.tasks.get(task_id)
+            if task is None:
+                return {"success": False, "error": "task not found"}
+            task.last_error = str(error)[:1000]
+            if task.attempts >= task.max_attempts:
+                task.status = TaskStatus.FAILED
+                task.retry_at = None
+            else:
+                delay = min(300, 2 ** max(0, task.attempts - 1))
+                task.status = TaskStatus.RETRY_PENDING
+                task.retry_at = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat()
+            task.updated_at = _now()
+            self._persist_locked()
+            return {"success": True, "task": task.to_dict()}
+
+    async def bind_agent(self, task_id: str, agent_id: str) -> dict[str, Any]:
+        """Associate a spawned runtime agent with its durable graph task."""
+        async with self._lock:
+            task = self.tasks.get(task_id)
+            if task is None:
+                return {"success": False, "error": "task not found"}
+            task.metadata["agent_id"] = agent_id
+            task.updated_at = _now()
+            self._persist_locked()
+            return {"success": True, "task": task.to_dict()}
+
+    async def bind_validation(self, task_id: str, validation_id: str) -> dict[str, Any]:
+        """Attach a validation record to a validator task."""
+        async with self._lock:
+            task = self.tasks.get(task_id)
+            if task is None:
+                return {"success": False, "error": "task not found"}
+            if task.role != "validator":
+                return {"success": False, "error": "task is not a validator"}
+            task.metadata["validation_record_id"] = validation_id
+            task.updated_at = _now()
             self._persist_locked()
             return {"success": True, "task": task.to_dict()}
 
@@ -199,6 +286,140 @@ class AttackGraph:
             ]
             return deepcopy(tasks)
 
+    async def complete_and_schedule_followups(
+        self,
+        *,
+        agent_id: str,
+        role: str,
+        success: bool,
+        report_ids: list[str] | None = None,
+        findings: list[str] | None = None,
+        open_items: list[str] | None = None,
+        evidence_ids: list[str] | None = None,
+        checklist_codes: list[str] | None = None,
+        coverage_ids: list[str] | None = None,
+        thinking_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Close an agent task and create durable validation follow-ups.
+
+        Agent completion is a graph event, not just a mailbox message.  A
+        successful specialist therefore creates a validator task, followed by
+        a chain/impact review task.  Stable dispatch keys make recovery and
+        repeated ``agent_finish`` calls idempotent.
+        """
+        reports = list(dict.fromkeys(str(item) for item in (report_ids or []) if str(item)))
+        open_rows = [str(item) for item in (open_items or []) if str(item)]
+        finding_rows = [str(item) for item in (findings or []) if str(item)]
+        evidence_rows = list(dict.fromkeys(str(item) for item in (evidence_ids or []) if str(item)))
+        checklist_rows = list(
+            dict.fromkeys(str(item) for item in (checklist_codes or []) if str(item))
+        )
+        coverage_rows = list(dict.fromkeys(str(item) for item in (coverage_ids or []) if str(item)))
+        thinking_rows = list(dict.fromkeys(str(item) for item in (thinking_ids or []) if str(item)))
+
+        async with self._lock:
+            origin = next(
+                (
+                    task
+                    for task in self.tasks.values()
+                    if str(task.metadata.get("agent_id", "")) == agent_id
+                ),
+                None,
+            )
+            if origin is None:
+                return {"success": False, "error": "agent task not found", "agent_id": agent_id}
+            origin.status = TaskStatus.SUCCEEDED if success else TaskStatus.FAILED
+            origin.updated_at = _now()
+            self._refresh_blocked_locked()
+            self._persist_locked()
+            origin_snapshot = origin.to_dict()
+
+        scheduled: list[dict[str, Any]] = []
+        base_key = origin.dispatch_key or f"agent:{agent_id}"
+        shared_metadata = {
+            "node_type": "follow_up",
+            "generated_by": agent_id,
+            "source_node_ids": [origin.task_id],
+            "source_information": evidence_rows or list(origin.metadata.get("evidence_ids") or []),
+            "checklist_codes": checklist_rows
+            or list(origin.metadata.get("checklist_codes") or []),
+            "skills": list(origin.metadata.get("skills") or []),
+            "component": str(origin.metadata.get("component") or ""),
+            "risk_area": str(origin.metadata.get("risk_area") or origin.risk),
+            "stop_conditions": [
+                "validate the assigned evidence and close every open item",
+            ],
+            "filed_report_ids": reports,
+            "findings": finding_rows,
+            "open_items": open_rows,
+            "reviewed_coverage_entry_ids": coverage_rows,
+            "reviewed_thinking_ids": thinking_rows,
+            "source_agent_id": agent_id,
+        }
+
+        if role in {"specialist", "source_mapper", "gap_closer"}:
+            validator = await self.add_task(
+                title=f"Validate: {origin.title}",
+                role="validator",
+                phase="validation",
+                risk=origin.risk,
+                dispatch_key=f"validator:{base_key}",
+                dependencies=[origin.task_id],
+                evidence_ids=[*evidence_rows, *reports],
+                metadata={**shared_metadata, "node_type": "validator"},
+            )
+            if validator.get("success") and isinstance(validator.get("task"), dict):
+                scheduled.append(validator["task"])
+
+        reflection_task: dict[str, Any] | None = None
+        if role == "validator":
+            reflection = await self.add_task(
+                title=f"Planner reflection: {origin.title}",
+                role="reflection",
+                phase="planning",
+                risk=origin.risk,
+                dispatch_key=f"reflection:{base_key}",
+                dependencies=[origin.task_id],
+                evidence_ids=[*evidence_rows, *reports],
+                metadata={**shared_metadata, "node_type": "reflection"},
+            )
+            if reflection.get("success") and isinstance(reflection.get("task"), dict):
+                reflection_task = reflection["task"]
+                scheduled.append(reflection_task)
+
+        if role in {"specialist", "validator", "gap_closer"} and (
+            reports or finding_rows or open_rows or coverage_rows or thinking_rows
+        ):
+            validator_task = next(
+                (task for task in scheduled if task.get("role") == "validator"), None
+            )
+            dependency = (
+                [str(reflection_task["task_id"])]
+                if reflection_task and reflection_task.get("task_id")
+                else [str(validator_task["task_id"])]
+                if validator_task and validator_task.get("task_id")
+                else [origin.task_id]
+            )
+            chain = await self.add_task(
+                title=f"Chain and impact review: {origin.title}",
+                role="chain_reviewer",
+                phase="impact_review",
+                risk=origin.risk,
+                dispatch_key=f"chain:{base_key}",
+                dependencies=dependency,
+                evidence_ids=[*evidence_rows, *reports, *coverage_rows, *thinking_rows],
+                metadata={**shared_metadata, "node_type": "chain_reviewer"},
+            )
+            if chain.get("success") and isinstance(chain.get("task"), dict):
+                scheduled.append(chain["task"])
+
+        return {
+            "success": True,
+            "agent_id": agent_id,
+            "origin_task": origin_snapshot,
+            "scheduled_tasks": scheduled,
+        }
+
     async def snapshot(self) -> dict[str, Any]:
         async with self._lock:
             return {
@@ -208,8 +429,67 @@ class AttackGraph:
                 ),
             }
 
-    def _refresh_blocked_locked(self) -> None:
+    async def completion_gate(self) -> dict[str, Any]:
+        """Return graph obligations that must be closed before report finish."""
+        async with self._lock:
+            self._refresh_blocked_locked()
+            tasks = [
+                task.to_dict()
+                for task in self.tasks.values()
+                if task.role != "planner" and task.metadata.get("node_type") != "objective"
+            ]
+        open_tasks = [
+            task
+            for task in tasks
+            if task.get("status")
+            in {
+                TaskStatus.PENDING.value,
+                TaskStatus.BLOCKED.value,
+                TaskStatus.READY.value,
+                TaskStatus.RUNNING.value,
+                TaskStatus.RETRY_PENDING.value,
+            }
+        ]
+        failed_followups = [
+            task
+            for task in tasks
+            if task.get("role") in {"validator", "reflection", "chain_reviewer"}
+            and task.get("status") in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
+        ]
+        failed_tasks = [
+            task
+            for task in tasks
+            if task.get("status") == TaskStatus.FAILED.value
+        ]
+        missing_validation = [
+            task
+            for task in tasks
+            if task.get("role") == "validator"
+            and task.get("status") == TaskStatus.SUCCEEDED.value
+            and not task.get("metadata", {}).get("validation_record_id")
+        ]
+        return {
+            "success": not open_tasks and not failed_tasks and not missing_validation,
+            "open_tasks": open_tasks,
+            "failed_followups": failed_followups,
+            "failed_tasks": failed_tasks,
+            "missing_validation": missing_validation,
+            "task_count": len(tasks),
+        }
+
+    def _refresh_blocked_locked(self, *, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
         for task in self.tasks.values():
+            if task.status == TaskStatus.RETRY_PENDING:
+                if task.retry_at:
+                    try:
+                        retry_at = datetime.fromisoformat(task.retry_at)
+                    except ValueError:
+                        retry_at = now
+                    if retry_at <= now:
+                        task.status = TaskStatus.READY
+                        task.retry_at = None
+                continue
             if task.status not in {TaskStatus.PENDING, TaskStatus.BLOCKED, TaskStatus.READY}:
                 continue
             dependencies = [self.tasks.get(item) for item in task.dependencies]

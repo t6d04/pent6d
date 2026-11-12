@@ -22,6 +22,7 @@ from strix.config import load_settings
 from strix.tools.agents_graph.tools import (
     agent_finish,
     create_agent,
+    dispatch_ready_tasks,
     send_message_to_agent,
     stop_agent,
     view_agent_graph,
@@ -30,9 +31,19 @@ from strix.tools.agents_graph.tools import (
 from strix.tools.attack_graph import create_attack_task, list_attack_tasks, update_attack_task
 from strix.tools.chaining.tools import (
     get_chain_review_status,
+    get_creative_scorecard,
     list_thinking,
     record_chain_review,
     record_thinking,
+)
+from strix.tools.checklist.tools import (
+    checklist_bulk_na,
+    checklist_export,
+    checklist_get,
+    checklist_integrity,
+    checklist_list,
+    checklist_progress,
+    checklist_update,
 )
 from strix.tools.coverage.tools import list_coverage, record_coverage, update_coverage
 from strix.tools.finish.tool import finish_scan
@@ -108,6 +119,7 @@ from strix.tools.todo.tools import (
     mark_todo_pending,
     update_todo,
 )
+from strix.tools.validation.tools import list_validations, record_validation
 from strix.tools.web_search.tool import web_get_contents, web_search
 
 
@@ -623,6 +635,15 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     get_note,
     update_note,
     delete_note,
+    checklist_progress,
+    checklist_list,
+    checklist_get,
+    checklist_update,
+    checklist_bulk_na,
+    checklist_integrity,
+    checklist_export,
+    record_validation,
+    list_validations,
     remember_shared_memory,
     search_shared_memory,
     get_shared_memory,
@@ -641,6 +662,7 @@ _BASE_TOOLS: tuple[Tool, ...] = (
     list_coverage,
     record_chain_review,
     get_chain_review_status,
+    get_creative_scorecard,
     record_thinking,
     list_thinking,
     get_threat_model,
@@ -688,6 +710,15 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     get_note,
     update_note,
     delete_note,
+    checklist_progress,
+    checklist_list,
+    checklist_get,
+    checklist_update,
+    checklist_bulk_na,
+    checklist_integrity,
+    checklist_export,
+    record_validation,
+    list_validations,
     remember_shared_memory,
     search_shared_memory,
     get_shared_memory,
@@ -695,11 +726,13 @@ _ROOT_TOOLS: tuple[Tool, ...] = (
     create_attack_task,
     list_attack_tasks,
     update_attack_task,
+    dispatch_ready_tasks,
     record_coverage,
     update_coverage,
     list_coverage,
     record_chain_review,
     get_chain_review_status,
+    get_creative_scorecard,
     record_thinking,
     list_thinking,
     get_threat_model,

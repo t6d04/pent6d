@@ -42,6 +42,36 @@ Cross-site scripting persists because context, parser, and framework edges are c
 **File/Metadata**
 - Image/SVG/XML names and EXIF, office documents processed server/client
 
+## POST and Request-Body Sources
+
+Reflected XSS is not limited to query strings. Treat every request body field as
+a source and test it with the same context discipline as a query parameter:
+
+- URL-encoded forms (`application/x-www-form-urlencoded`);
+- multipart forms (`multipart/form-data`), including filename, content type and
+  file metadata fields;
+- JSON/XML bodies and nested keys;
+- ASP.NET WebForms postbacks: `__VIEWSTATE`, `__EVENTVALIDATION`,
+  `__EVENTTARGET`, and `ctrl_*$field` controls;
+- search, login, feedback, poll and filter postbacks that re-render the
+  submitted value;
+- stored writes later rendered in admin/moderation, public detail, email or PDF
+  consumers.
+
+For every form, record the action, method, `enctype`, and every field name.
+Test the same logical field through both GET and POST when both paths exist:
+one path may encode correctly while the other does not. Use a browser form fill
+or proxy replay and capture both the payload request and a benign baseline.
+
+When a form is CAPTCHA/CSRF-protected:
+
+- use a valid session and challenge for persisted writes;
+- use an intentionally invalid CAPTCHA to trigger the validation-failure
+  re-render without storing content;
+- for stored XSS, identify and test the actual consumer. If the consumer
+  requires an unavailable account, record `open_proof_gap`/Thinking — never
+  `ruled_out` merely because the admin screen could not be reached.
+
 ## Context Encoding Rules
 
 - **HTML text**: encode `< > & " '`
@@ -161,7 +191,7 @@ Keep a compact set tuned per context:
 
 ## Testing Methodology
 
-1. **Identify sources** - URL/query/hash/referrer, postMessage, storage, WebSocket, server JSON
+1. **Identify sources** - URL/query/hash/referrer, POST/PUT/PATCH body fields (URL-encoded, multipart, JSON), WebForms postbacks, postMessage, storage, WebSocket, server JSON
 2. **Trace to sinks** - Map data flow from source to sink
 3. **Classify context** - HTML node, attribute, URL, script block, event handler, JS eval-like, CSS, SVG
 4. **Assess defenses** - Output encoding, sanitizer, CSP, Trusted Types, DOMPurify config
@@ -174,6 +204,7 @@ Keep a compact set tuned per context:
 2. Demonstrate cross-browser execution where relevant or explain parser-specific behavior
 3. Show bypass of stated defenses (sanitizer settings, CSP/Trusted Types) with proof
 4. Quantify impact beyond alert: data accessed, action performed, persistence achieved
+5. For POST/body XSS, include the proving request and its benign baseline in `http_exchange_ids`, and name the exact form field, method and content type
 
 ## False Positives
 

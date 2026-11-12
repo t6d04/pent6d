@@ -466,8 +466,26 @@ Nếu phải triển khai từng phần, thứ tự nên là:
   type, status, risk, attempts, source nodes, evidence IDs và generated-by.
 - [x] Regression tests cho supervisor, attack graph, shared memory, recon và
   agent coordination đã pass.
+- [x] Checklist phương pháp theo run được tạo từ các vulnerability/protocol
+  skill pack, lưu tại `state/checklist.json` và mirror ở artifact root.
+- [x] Checklist có evidence gate cho `pass`/`fail`, trạng thái trung gian
+  `partial`/`blocked`/`needs_validation`, kiểm tra integrity và export JSON/
+  Markdown.
+- [x] `finish_scan` chặn kết thúc khi checklist còn mở; specialist dispatch
+  trên run checklist-enabled phải khai báo `checklist_codes` để planner giao
+  ownership rõ ràng.
+- [x] Khi specialist gọi `agent_finish`, task tương ứng được đóng trong
+  attack graph và tự sinh task `validator` rồi `chain_reviewer` theo
+  dependency; các task này idempotent theo `dispatch_key`.
+- [x] Root có `dispatch_ready_tasks` để chạy các follow-up đã ready, giữ giới
+  hạn concurrency và bind agent runtime vào graph task.
+- [x] Runner đăng ký callback scheduler vào `AgentCoordinator`; sau
+  `agent_finish`, follow-up ready được tự dispatch ngay, còn tool thủ công vẫn
+  là đường retry/resume khi spawn bị giới hạn hoặc lỗi.
 
-Các phần tiếp theo chưa bật mặc định gồm scheduler đọc attack graph, independent
-validator orchestration, reflection loop và UI graph view. Chúng sẽ được triển
-khai sau khi các state contract hiện tại được giữ ổn định qua thêm một vòng
-integration test.
+Các state contract P0/P1 hiện đã được bật: scheduler đọc attack graph có claim
+nguyên tử và retry/backoff, validator độc lập ghi verdict bền vững, finish gate
+kiểm tra nghĩa vụ graph, chain review bắt buộc xử lý cả Coverage và Thinking,
+và reflection task được tạo sau validator. UI graph tiếp tục đọc cùng attack
+graph này để hiển thị trạng thái và dependency; các cải tiến giao diện chỉ là
+phần trình bày, không thay đổi contract điều phối.

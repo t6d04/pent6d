@@ -229,7 +229,12 @@ def resolve_web_search_provider(settings: Settings) -> str | tuple[str, str] | d
     emulated by a second LLM request: the scan agent receives that hosted tool
     directly and decides when to use it.
     """
-    provider = settings.integrations.web_search_provider
+    integrations = getattr(settings, "integrations", None)
+    if integrations is None:
+        # Lightweight runner/test settings may intentionally omit optional
+        # integrations.  Keep the keyless public-search fallback available.
+        return ("ddgs", "")
+    provider = integrations.web_search_provider
     llm = getattr(settings, "llm", None)
     native_available = bool(llm and native_web_search_supported(llm))
     if provider == "native":
@@ -245,7 +250,7 @@ def resolve_web_search_provider(settings: Settings) -> str | tuple[str, str] | d
         }
     if provider == "auto" and native_available:
         return "native"
-    return _resolve_provider(settings.integrations)
+    return _resolve_provider(integrations)
 
 
 def _not_configured_error(missing: str) -> dict[str, Any]:

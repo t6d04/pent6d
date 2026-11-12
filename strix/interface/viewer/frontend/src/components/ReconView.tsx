@@ -36,7 +36,7 @@ interface CoverageRecord {
 }
 
 const groups = ["all", "subdomain", "javascript", "js_leak", "source_leak", "endpoint", "service", "technology", "screenshots"];
-const coverageCategories = ["asset_discovery", "dns_resolution", "live_probe", "service_discovery", "web_surface", "javascript_analysis", "content_discovery", "parameter_discovery", "technology_fingerprint", "authentication_surface", "visual_capture"];
+const coverageCategories = ["asset_discovery", "dns_resolution", "live_probe", "service_discovery", "web_surface", "javascript_analysis", "content_discovery", "parameter_discovery", "form_discovery", "technology_fingerprint", "authentication_surface", "visual_capture"];
 const label = (value: string) => value === "js_leak" ? "JS leak candidates" : value === "source_leak" ? "Source leaks" : value.replaceAll("_", " ");
 
 function screenshotUrl(run: string | null, name: string) {
@@ -140,6 +140,6 @@ export default function ReconView({ runName, finished }: { runName: string | nul
       </article>)}
     </div>}
     {filtered.length > 50 && <div className="flex items-center gap-4 text-sm"><button disabled={!page} onClick={() => setPage(page - 1)}>Previous</button><span>{page + 1} / {Math.ceil(filtered.length / 50)}</span><button disabled={(page + 1) * 50 >= filtered.length} onClick={() => setPage(page + 1)}>Next</button></div>}
-    {preview?.screenshot && <div role="dialog" aria-modal="true" aria-label="Screenshot preview" className="fixed inset-0 z-50 flex flex-col gap-3 overflow-auto bg-black/95 p-6"><button autoFocus className="self-end rounded border px-4 py-2" onClick={() => setPreview(null)}>Close</button><p className="break-all text-sm">{preview.value}</p><img className="mx-auto max-w-full" src={screenshotUrl(runName, preview.screenshot)} alt={preview.value} /></div>}
+    {preview?.screenshot && <div role="dialog" aria-modal="true" aria-label="Screenshot preview" className="fixed inset-0 z-50 flex flex-col gap-3 overflow-auto bg-black/95 p-[clamp(0.75rem,3vw,2rem)]"><button autoFocus className="self-end rounded border px-4 py-2" onClick={() => setPreview(null)}>Close</button><p className="break-all text-sm">{preview.value}</p><img className="mx-auto max-h-[78vh] max-w-full object-contain" src={screenshotUrl(runName, preview.screenshot)} alt={preview.value} /></div>}
   </section>;
 }

@@ -47,6 +47,7 @@ _RECON_COVERAGE_CATEGORIES = (
     "javascript_analysis",
     "content_discovery",
     "parameter_discovery",
+    "form_discovery",
     "technology_fingerprint",
     "authentication_surface",
     "visual_capture",
@@ -65,6 +66,7 @@ class ReconCoverageRecord(BaseModel):
         "javascript_analysis",
         "content_discovery",
         "parameter_discovery",
+        "form_discovery",
         "technology_fingerprint",
         "authentication_surface",
         "visual_capture",
@@ -111,6 +113,7 @@ def _required_coverage(
                 "javascript_analysis",
                 "content_discovery",
                 "parameter_discovery",
+                "form_discovery",
                 "authentication_surface",
                 "visual_capture",
             }
@@ -122,6 +125,7 @@ def _required_coverage(
                 "service_discovery",
                 "web_surface",
                 "parameter_discovery",
+                "form_discovery",
                 "authentication_surface",
             }
         )
@@ -201,6 +205,8 @@ class ReconObservation(BaseModel):
     ip_addresses: list[str] = Field(default_factory=list, max_length=50)
     technologies: list[str] = Field(default_factory=list, max_length=50)
     method: str = Field(default="", max_length=20)
+    content_type: str = Field(default="", max_length=200)
+    parameters: list[str] = Field(default_factory=list, max_length=100)
     evidence: str = Field(default="", max_length=8000)
     confidence: Literal["observed", "inferred", "unverified"] = "unverified"
     screenshot_path: str = Field(default="", max_length=2048)
@@ -406,10 +412,15 @@ def _save(run_dir: Path, entries: list[dict[str, Any]], agent_id: str | None) ->
             identity = json.dumps([entry["kind"], entry["value"], entry["method"]])
             key = hashlib.sha256(identity.encode()).hexdigest()[:24]
             old = indexed.get(key, {})
-            # Sparse re-observations must not erase a persisted screenshot.
+            # Sparse re-observations must not erase a persisted screenshot or
+            # the form/body metadata a later specialist relies on.
+            merged = {**old, **entry}
+            if not entry.get("parameters") and old.get("parameters"):
+                merged["parameters"] = old["parameters"]
+            if not entry.get("content_type") and old.get("content_type"):
+                merged["content_type"] = old["content_type"]
             indexed[key] = {
-                **old,
-                **entry,
+                **merged,
                 "id": key,
                 "agent_id": agent_id,
                 "first_seen": old.get("first_seen", now),
@@ -612,8 +623,11 @@ async def record_recon(ctx: RunContextWrapper, observations_json: str) -> str:
     scope (in_scope/out_of_scope/unknown), attribution
     (confirmed/likely/unknown/out_of_scope), attribution_evidence,
     alive (alive/unreachable/unknown),
-    status_code, title, ip_addresses, technologies, method, evidence,
+    status_code, title, ip_addresses, technologies, method, content_type,
+    parameters (the observed query/body/path field names), evidence,
     confidence (observed/inferred/unverified), finding_id, screenshot_path.
+    For a POST/PUT/PATCH form or API body, record method, content_type and every
+    field name; a URL-only recon entry is not a complete body inventory.
     screenshot_path is a PNG/JPEG already captured in /workspace; it is copied
     to durable host storage immediately. Every live host/subdomain must have at
     least one screenshot across its canonical host records; aliases and routes
